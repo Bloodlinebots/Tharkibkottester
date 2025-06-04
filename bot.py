@@ -1,279 +1,269 @@
 import os
-import json
-import random
 import asyncio
+import random
 import threading
 import zipfile
+import tempfile
+
+from motor.motor_asyncio import AsyncIOMotorClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,  # ✅ FIXED
-    ContextTypes,
-    filters,         # ✅ FIXED
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    ContextTypes, MessageHandler, filters,
 )
 
-# Configurations
+# ---------------- CONFIG ----------------
+
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-VAULT_CHANNEL_ID = -1002624785490
+MONGO_URI = os.getenv("MONGO_URI")
+VAULT_CHANNEL_ID = int(os.getenv("VAULT_CHANNEL_ID"))
+CHAT_CHANNEL_ID = int(os.getenv("CHAT_CHANNEL_ID"))
 FORCE_JOIN_CHANNEL = "bot_backup"
 ADMIN_USER_ID = 7755789304
-TERMS_LINK = "https://t.me/bot_backup/7"
 DEVELOPER_LINK = "https://t.me/unbornvillian"
 SUPPORT_LINK = "https://t.me/botmine_tech"
+TERMS_LINK = "https://t.me/bot_backup/7"
 WELCOME_IMAGE = "https://files.catbox.moe/19j4mc.jpg"
+COOLDOWN = 8
 
-VIDEO_FILE = "video_ids.json"
-USER_FILE = "user_seen.json"
-SUDO_FILE = "sudos.json"
-BANNED_FILE = "banned.json"
+# ---------------- DATABASE INIT ----------------
 
-cooldown_time = 8
+mongo = AsyncIOMotorClient(MONGO_URI)
+db = mongo.bot_db
+videos_col = db.videos
+users_col = db.users
+sudo_col = db.sudos
+banned_col = db.banned
 cooldowns = {}
 
-# Helper functions
-def load_json(filename, default):
-    if os.path.exists(filename):
-        with open(filename, "r") as f:
-            return json.load(f)
-    else:
-        return default
+# ---------------- HELPERS ----------------
 
-def save_json(filename, data):
-    with open(filename, "w") as f:
-        json.dump(data, f, indent=2)
+def is_admin(uid):
+    return uid == ADMIN_USER_ID
 
-videos = load_json(VIDEO_FILE, [])
-user_seen = load_json(USER_FILE, {})
-sudo_users = load_json(SUDO_FILE, [])
-banned_users = load_json(BANNED_FILE, [])
+async def is_sudo(uid):
+    return (await sudo_col.find_one({"_id": uid})) or is_admin(uid)
 
-def is_admin(user_id):
-    return user_id == ADMIN_USER_ID
+async def is_banned(uid):
+    return await banned_col.find_one({"_id": uid})
 
-def is_sudo(user_id):
-    return user_id in sudo_users or is_admin(user_id)
-
-def is_banned(user_id):
-    return user_id in banned_users
-
-def delete_after_delay(bot, chat_id, message_id, delay):
-    import time
-    time.sleep(delay)
+async def delete_after_delay(bot, chat_id, message_id, delay):
+    await asyncio.sleep(delay)
     try:
-        asyncio.run(bot.delete_message(chat_id=chat_id, message_id=message_id))
-    except Exception:
+        await bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except:
         pass
 
-# Handlers
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
+# ---------------- HANDLERS ----------------
 
-    if is_banned(user_id):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if await is_banned(uid):
         await update.message.reply_text("🚫 You are banned from using this bot.")
         return
 
     try:
-        member = await context.bot.get_chat_member(f"@{FORCE_JOIN_CHANNEL}", user_id)
+        member = await context.bot.get_chat_member(f"@{FORCE_JOIN_CHANNEL}", uid)
         if member.status in ["left", "kicked"]:
-            keyboard = InlineKeyboardMarkup(
+            btn = InlineKeyboardMarkup(
                 [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{FORCE_JOIN_CHANNEL}")]]
             )
             await update.message.reply_text(
                 "🚫 You must join our channel to use this bot.\n\n"
-                "⚠️ If you leave the channel, you will be restricted from using the bot.\n\n"
-                "✅ After joining, please use /start again.",
-                reply_markup=keyboard,
+                "⚠️ If you leave, you will be restricted.\n\n"
+                "✅ After joining, use /start",
+                reply_markup=btn,
             )
             return
-    except Exception:
+    except:
         pass
 
     user = update.effective_user
-    log_text = (
-        f"📥 New User Started Bot\n\n"
-        f"👤 Name: {user.full_name}\n"
-        f"🆔 ID: {user.id}\n"
-        f"📛 Username: @{user.username if user.username else 'N/A'}"
+    await context.bot.send_message(
+        chat_id=VAULT_CHANNEL_ID,
+        text=(
+            f"📥 New User Started Bot\n\n"
+            f"👤 Name: {user.full_name}\n"
+            f"🆔 ID: {user.id}\n"
+            f"📛 Username: @{user.username if user.username else 'N/A'}"
+        )
     )
-    await context.bot.send_message(chat_id=VAULT_CHANNEL_ID, text=log_text)
 
     bot_name = (await context.bot.get_me()).first_name
-    caption = (
-        f"🥵 Welcome to {bot_name}!\n"
-        "Here you will access the most unseen videos.\n👇 Tap below to explore:"
-    )
-
-    keyboard = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("📩 Get Random Video", callback_data="get_video")],
-            [InlineKeyboardButton("Developer", url=DEVELOPER_LINK)],
-            [
-                InlineKeyboardButton("Support", url=SUPPORT_LINK),
-                InlineKeyboardButton("Help", callback_data="show_help"),
-            ],
-        ]
-    )
+    caption = f"🥵 Welcome to {bot_name}!\nHere you will access the most unseen videos.\n👇 Tap below to explore:"
 
     await update.message.reply_photo(
         photo=WELCOME_IMAGE,
         caption=caption,
-        reply_markup=keyboard,
-    )
-
-    disclaimer = (
-        "⚠️ **Disclaimer** ⚠️\n\n"
-        "We do NOT produce or spread adult content.\n"
-        "This bot is only for file forwarding.\n"
-        "If the file content contains adult videos, the bot holds no responsibility.\n"
-        "Please read terms and conditions carefully."
-    )
-    buttons = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📘 Terms & Conditions", url=TERMS_LINK)]]
-    )
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=disclaimer,
-        reply_markup=buttons,
-        parse_mode="Markdown",
-    )
-
-async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    bot_name = (await context.bot.get_me()).first_name
-    caption = (
-        f"🥵 Welcome to {bot_name}!\n"
-        "Here you will access the most unseen videos.\n👇 Tap below to explore:"
-    )
-    keyboard = InlineKeyboardMarkup(
-        [
+        reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📩 Get Random Video", callback_data="get_video")],
             [InlineKeyboardButton("Developer", url=DEVELOPER_LINK)],
-            [
-                InlineKeyboardButton("Support", url=SUPPORT_LINK),
-                InlineKeyboardButton("Help", callback_data="show_help"),
-            ],
-        ]
+            [InlineKeyboardButton("Support", url=SUPPORT_LINK), InlineKeyboardButton("Help", callback_data="show_privacy_info")]
+        ])
     )
-    await query.edit_message_media(
-        media=InputMediaPhoto(WELCOME_IMAGE, caption=caption),
-        reply_markup=keyboard,
+
+    await context.bot.send_message(
+        chat_id=uid,
+        text=(
+            "⚠️ **Disclaimer** ⚠️\n\n"
+            "We do NOT produce or spread adult content.\n"
+            "This bot is only for forwarding files.\n"
+            "If videos are adult, we take no responsibility.\n"
+            "Please read terms and conditions."
+        ),
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("📘 Terms & Conditions", url=TERMS_LINK)]]
+        ),
+        parse_mode="Markdown"
     )
 
 async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
+    uid = query.from_user.id
     await query.answer()
 
-    if is_banned(user_id):
+    if await is_banned(uid):
         await query.message.reply_text("🚫 You are banned from using this bot.")
         return
 
     now = asyncio.get_event_loop().time()
-    if not is_admin(user_id):
-        if user_id in cooldowns and cooldowns[user_id] > now:
-            wait = int(cooldowns[user_id] - now)
+    if not is_admin(uid):
+        if uid in cooldowns and cooldowns[uid] > now:
+            wait = int(cooldowns[uid] - now)
             await query.message.reply_text(f"⏳ Please wait {wait} seconds before getting another video.")
             return
-        cooldowns[user_id] = now + cooldown_time
+        cooldowns[uid] = now + COOLDOWN
 
-    seen = user_seen.get(str(user_id), [])
-    unseen = list(set(videos) - set(seen))
+    user = await users_col.find_one({"_id": uid}) or {"_id": uid, "seen": [], "msg_sent": False}
+    all_videos = await videos_col.distinct("msg_id")
+    unseen = list(set(all_videos) - set(user.get("seen", [])))
 
     if not unseen:
-        await query.message.reply_text(
-            "✅ You have watched all videos of our server 😅\nRestarting the list for you!"
-        )
-        user_seen[str(user_id)] = []
-        save_json(USER_FILE, user_seen)
-        unseen = videos.copy()
+        if not user.get("msg_sent", False):
+            await query.message.reply_text("✅ You have watched all videos. Restarting the list for you!")
+            user["msg_sent"] = True
+        user["seen"] = []
+        unseen = all_videos.copy()
 
     random.shuffle(unseen)
 
     for msg_id in unseen:
         try:
             sent = await context.bot.copy_message(
-                chat_id=user_id,
+                chat_id=uid,
                 from_chat_id=VAULT_CHANNEL_ID,
                 message_id=msg_id,
                 protect_content=True,
             )
-            threading.Thread(
-                target=delete_after_delay,
-                args=(context.bot, user_id, sent.message_id, 10800),
-                daemon=True,
-            ).start()
-
-            seen.append(msg_id)
-            user_seen[str(user_id)] = seen
-            save_json(USER_FILE, user_seen)
+            user["seen"].append(msg_id)
+            user["msg_sent"] = False
+            await users_col.replace_one({"_id": uid}, user, upsert=True)
 
             await query.message.reply_text(
-                "Want another? 😈",
+                f"🎬 Video {len(user['seen'])}/{len(all_videos)} watched.\nWant another? 😈",
                 reply_markup=InlineKeyboardMarkup(
                     [[InlineKeyboardButton("📥 Get Another Video", callback_data="get_video")]]
-                ),
+                )
             )
+
+            asyncio.create_task(delete_after_delay(context.bot, uid, sent.message_id, 10800))
             return
-        except Exception:
-            if msg_id in videos:
-                videos.remove(msg_id)
-                save_json(VIDEO_FILE, videos)
+        except:
+            await videos_col.delete_one({"msg_id": msg_id})
 
     await query.message.reply_text("⚠️ No videos available right now, please try later.")
 
 async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not is_sudo(user_id):
+    uid = update.effective_user.id
+    if not await is_sudo(uid):
         return
 
     if update.message.video:
         try:
             sent = await context.bot.copy_message(
                 chat_id=VAULT_CHANNEL_ID,
-                from_chat_id=update.message.chat_id,
+                from_chat_id=CHAT_CHANNEL_ID,
                 message_id=update.message.message_id,
             )
-            videos.append(sent.message_id)
-            save_json(VIDEO_FILE, videos)
+            await videos_col.insert_one({"msg_id": sent.message_id})
             await update.message.reply_text("✅ Video uploaded and saved to vault.")
-        except Exception:
+        except:
             await update.message.reply_text("⚠️ Failed to upload.")
 
-async def show_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("Use /privacy to see the bot's Terms and Conditions")
+async def show_privacy_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text("/privacy - Use this to see bot's Terms and Conditions")
 
 async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.forward_message(
-            chat_id=update.effective_chat.id, from_chat_id="@bot_backup", message_id=7
+            chat_id=update.effective_chat.id,
+            from_chat_id="@bot_backup",
+            message_id=7
         )
-    except Exception:
+    except:
         await update.message.reply_text("⚠️ Failed to fetch privacy message.")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("If you need any help then contact developer")
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not await is_sudo(uid):
+        await update.message.reply_text("🚫 You are not authorized.")
+        return
 
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❓ Unknown command.")
+    text = update.message.text.partition(" ")[2]
+    if not text:
+        await update.message.reply_text("Usage: /broadcast Your message here")
+        return
+
+    count = 0
+    async for user in users_col.find():
+        try:
+            await context.bot.send_message(chat_id=user["_id"], text=text)
+            count += 1
+        except:
+            pass
+
+    await update.message.reply_text(f"📣 Broadcast sent to {count} users.")
+
+async def add_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_admin(uid):
+        await update.message.reply_text("🚫 Only owner can add sudo.")
+        return
+
+    try:
+        new_sudo = int(context.args[0])
+        await sudo_col.update_one({"_id": new_sudo}, {"$set": {"_id": new_sudo}}, upsert=True)
+        await update.message.reply_text(f"✅ Added {new_sudo} as sudo.")
+    except:
+        await update.message.reply_text("Invalid user ID.")
+
+async def remove_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_admin(uid):
+        await update.message.reply_text("🚫 Only owner can remove sudo.")
+        return
+
+    try:
+        rem_sudo = int(context.args[0])
+        await sudo_col.delete_one({"_id": rem_sudo})
+        await update.message.reply_text(f"✅ Removed {rem_sudo} from sudo.")
+    except:
+        await update.message.reply_text("Invalid user ID.")
+
+# ---------------- MAIN ----------------
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(callback_get_video, pattern="get_video"))
+    app.add_handler(CallbackQueryHandler(show_privacy_info, pattern="show_privacy_info"))
     app.add_handler(CommandHandler("privacy", privacy_command))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CallbackQueryHandler(callback_get_video, pattern="^get_video$"))
-    app.add_handler(CallbackQueryHandler(back_to_start, pattern="^back$"))
-    app.add_handler(CallbackQueryHandler(show_help_callback, pattern="^show_help$"))
-
-    app.add_handler(MessageHandler(filters.VIDEO, auto_upload))  # ✅ Video upload for sudo users
-
-    app.add_handler(MessageHandler(filters.COMMAND, unknown))  # Unknown commands
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("addsudo", add_sudo))
+    app.add_handler(CommandHandler("remsudo", remove_sudo))
+    app.add_handler(MessageHandler(filters.VIDEO, auto_upload))
 
     app.run_polling()
 
