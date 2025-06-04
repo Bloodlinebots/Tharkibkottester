@@ -1,6 +1,6 @@
 {
   "name": "Telegram Video Vault Bot",
-  "description": "Telegram bot that shares videos with MongoDB and dual channel support",
+  "description": "Telegram bot that shares videos with MongoDB",
   "repository": "https://github.com/yourusername/your-repo-name",
   "keywords": ["telegram", "bot", "mongo", "video"],
   "env": {
@@ -10,14 +10,6 @@
     },
     "MONGO_URI": {
       "description": "MongoDB connection URI (use MongoDB Atlas or other host)",
-      "required": true
-    },
-    "VAULT_CHANNEL_ID": {
-      "description": "Channel where videos are stored (numeric ID like -10012345678)",
-      "required": true
-    },
-    "CHAT_CHANNEL_ID": {
-      "description": "Channel where bot listens for uploads (can be same as vault)",
       "required": true
     },
     "ADMIN_USER_ID": {
