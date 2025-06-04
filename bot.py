@@ -39,9 +39,6 @@ def is_admin(uid):
 def is_sudo(uid, sudo_list):
     return uid in sudo_list or is_admin(uid)
 
-def is_banned(uid, banned_list):
-    return uid in banned_list
-
 async def get_user_data(uid):
     user = await db.users.find_one({"_id": uid})
     return user or {"_id": uid, "seen": [], "msg_sent": False}
@@ -255,6 +252,94 @@ async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("If you need any help, contact the developer.")
 
+# --------- ADMIN COMMANDS -----------
+
+async def add_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
+    try:
+        target_id = int(context.args[0])
+        await db.sudos.update_one({"_id": target_id}, {"$set": {"_id": target_id}}, upsert=True)
+        await update.message.reply_text(f"✅ Added {target_id} as sudo user.")
+    except:
+        await update.message.reply_text("⚠️ Usage: /addsudo 123456789")
+
+async def remove_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
+    try:
+        target_id = int(context.args[0])
+        await db.sudos.delete_one({"_id": target_id})
+        await update.message.reply_text(f"❌ Removed {target_id} from sudo users.")
+    except:
+        await update.message.reply_text("⚠️ Usage: /remsudo 123456789")
+
+async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sudo_list = [s["_id"] async for s in db.sudos.find()]
+    uid = update.effective_user.id
+    if not is_sudo(uid, sudo_list):
+        return
+    try:
+        target_id = int(context.args[0])
+        await db.banned.update_one({"_id": target_id}, {"$set": {"_id": target_id}}, upsert=True)
+        await update.message.reply_text(f"🚫 User {target_id} banned.")
+    except:
+        await update.message.reply_text("⚠️ Usage: /ban 123456789")
+
+async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sudo_list = [s["_id"] async for s in db.sudos.find()]
+    uid = update.effective_user.id
+    if not is_sudo(uid, sudo_list):
+        return
+    try:
+        target_id = int(context.args[0])
+        await db.banned.delete_one({"_id": target_id})
+        await update.message.reply_text(f"✅ User {target_id} unbanned.")
+    except:
+        await update.message.reply_text("⚠️ Usage: /unban 123456789")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sudo_list = [s["_id"] async for s in db.sudos.find()]
+    uid = update.effective_user.id
+    if not is_sudo(uid, sudo_list):
+        return
+
+    if not context.args:
+        await update.message.reply_text("⚠️ Usage: /broadcast your message here")
+        return
+
+    msg = " ".join(context.args)
+    users = db.users.find()
+    count = 0
+
+    async for user in users:
+        try:
+            await context.bot.send_message(chat_id=user["_id"], text=msg)
+            count += 1
+        except:
+            pass
+    await update.message.reply_text(f"✅ Broadcast sent to {count} users.")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sudo_list = [s["_id"] async for s in db.sudos.find()]
+    uid = update.effective_user.id
+    if not is_sudo(uid, sudo_list):
+        return
+
+    total_users = await db.users.count_documents({})
+    total_videos = await db.videos.count_documents({})
+    total_banned = await db.banned.count_documents({})
+    total_sudos = await db.sudos.count_documents({})
+
+    text = (
+        "📊 **Bot Statistics**\n\n"
+        f"👥 Total Users: `{total_users}`\n"
+        f"🎞 Total Videos: `{total_videos}`\n"
+        f"🚫 Banned Users: `{total_banned}`\n"
+        f"🛡 Sudo Users: `{total_sudos}`"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
 # --------- MAIN -----------
 
 def main():
@@ -266,10 +351,17 @@ def main():
     app.add_handler(CallbackQueryHandler(show_privacy_info, pattern="show_privacy_info"))
     app.add_handler(CommandHandler("privacy", privacy_command))
     app.add_handler(CommandHandler("help", help_command))
+
+    app.add_handler(CommandHandler("addsudo", add_sudo))
+    app.add_handler(CommandHandler("remsudo", remove_sudo))
+    app.add_handler(CommandHandler("ban", ban_user))
+    app.add_handler(CommandHandler("unban", unban_user))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler(["stats", "status"], stats_command))
+
     app.add_handler(MessageHandler(filters.VIDEO, auto_upload))
 
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-    
