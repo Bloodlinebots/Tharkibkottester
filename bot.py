@@ -365,10 +365,115 @@ async def addcoin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {e}")
 
-# ---------- ORIGINAL COMMANDS (unchanged) ----------
-# privacy, help, sudo, ban, unban, auto-upload, stats … kept exactly as before
-# (they didn't need any edits, so omitted here for brevity – copy from your file)
+async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not await is_sudo(uid):
+        return
 
+    if update.message.video:
+        video = update.message.video
+        unique_id = video.file_unique_id
+
+        existing = await db.videos.find_one({"unique_id": unique_id})
+        if existing:
+            return await update.message.reply_text("⚠️ This video already exists in the vault.")
+
+        try:
+            sent = await context.bot.copy_message(
+                chat_id=VAULT_CHANNEL_ID,
+                from_chat_id=update.message.chat_id,
+                message_id=update.message.message_id,
+            )
+            await add_video(sent.message_id, unique_id=unique_id)
+            await update.message.reply_text("✅ Uploaded to vault and saved.")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Upload failed: {e}")
+            await context.bot.send_message(LOG_CHANNEL_ID, f"❌ Upload error by {uid}: {e}")
+
+async def show_privacy_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.message.reply_text("/privacy - View bot's Terms and Conditions")
+
+async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.forward_message(
+            chat_id=update.effective_chat.id,
+            from_chat_id="@bot_backup",
+            message_id=7,
+        )
+    except:
+        await update.message.reply_text("⚠️ Could not fetch privacy policy.")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Need help? Contact the developer.")
+
+async def add_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
+    try:
+        target = int(context.args[0])
+        await db.sudos.update_one({"_id": target}, {"$set": {"_id": target}}, upsert=True)
+        await update.message.reply_text(f"✅ Added {target} as sudo.")
+    except:
+        await update.message.reply_text("⚠️ Usage: /addsudo user_id")
+
+async def remove_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
+    try:
+        target = int(context.args[0])
+        await db.sudos.delete_one({"_id": target})
+        await update.message.reply_text(f"❌ Removed {target} from sudo.")
+    except:
+        await update.message.reply_text("⚠️ Usage: /remsudo user_id")
+
+async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_sudo(update.effective_user.id):
+        return
+    try:
+        target = int(context.args[0])
+        await db.banned.update_one({"_id": target}, {"$set": {"_id": target}}, upsert=True)
+        await update.message.reply_text(f"🚫 Banned user {target}")
+    except:
+        await update.message.reply_text("⚠️ Usage: /ban user_id")
+
+async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_sudo(update.effective_user.id):
+        return
+    try:
+        target = int(context.args[0])
+        await db.banned.delete_one({"_id": target})
+        await update.message.reply_text(f"✅ Unbanned user {target}")
+    except:
+        await update.message.reply_text("⚠️ Usage: /unban user_id")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_sudo(update.effective_user.id):
+        return
+    if not context.args:
+        return await update.message.reply_text("⚠️ Usage: /broadcast your message")
+
+    msg = " ".join(context.args)
+    count = 0
+    async for user in db.users.find():
+        try:
+            await context.bot.send_message(user["_id"], msg)
+            count += 1
+        except:
+            pass
+    await update.message.reply_text(f"✅ Broadcast sent to {count} users.")
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_sudo(update.effective_user.id):
+        return
+    v = await db.videos.count_documents({})
+    u = await db.users.count_documents({})
+    s = await db.sudos.count_documents({})
+    b = await db.banned.count_documents({})
+    await update.message.reply_text(
+        f"📊 **Bot Stats**\n\n🎞 Videos: `{v}`\n👥 Users: `{u}`\n🛡 Sudo: `{s}`\n🚫 Banned: `{b}`",
+        parse_mode="Markdown"
+        )
 # ───────── MAIN ─────────
 async def main():
     app = ApplicationBuilder().token(TOKEN).build()
