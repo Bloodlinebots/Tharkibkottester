@@ -101,7 +101,26 @@ async def send_welcome(uid, context):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📘 Terms & Conditions", url=TERMS_LINK)]]),
         parse_mode="Markdown"
     )
+async def force_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try:
+        await query.answer()
+    except:
+        pass
 
+    uid = query.from_user.id
+    joined_all, join_buttons = await check_force_join(uid, context.bot)
+    if not joined_all:
+        join_buttons.append(InlineKeyboardButton("✅ I Joined", callback_data="force_check"))
+        return await query.message.edit_text(
+            "❗ You still haven't joined all required channels.",
+            reply_markup=InlineKeyboardMarkup([[btn] for btn in join_buttons])
+        )
+
+    await db.users.update_one({"_id": uid}, {"$set": {"_id": uid}}, upsert=True)
+    await query.message.delete()
+    await send_welcome(uid, context)
+    
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = update.effective_user
