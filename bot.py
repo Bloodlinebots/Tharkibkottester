@@ -1,6 +1,8 @@
+# bot.py
+
 import os
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ContextTypes, filters
@@ -16,7 +18,7 @@ VAULT_CHANNEL_ID = -1002564608005
 LOG_CHANNEL_ID = -1002624785490
 FORCE_JOIN_CHANNELS = [
     {"type": "public", "username": "bot_backup", "name": "RASILI CHU💦"},
-    {"type": "private", "chat_id": -1002799718375, "name": "RASMALAI🥵"}
+    {"type": "private", "chat_id": -1002799718375, "name": "RASMALAI🧵"}
 ]
 ADMIN_USER_ID = 7755789304
 DEVELOPER_LINK = "https://t.me/unbornvillian"
@@ -28,8 +30,7 @@ WELCOME_IMAGE = "https://graph.org/file/a13e9733afdad69720d67.jpg"
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["telegram_bot"]
 
-# --- UTILS ---
-
+# --- Utility Functions ---
 def is_admin(uid):
     return uid == ADMIN_USER_ID
 
@@ -37,18 +38,28 @@ async def is_sudo(uid):
     sudo_list = [s["_id"] async for s in db.sudos.find()]
     return uid in sudo_list or is_admin(uid)
 
-async def ensure_user_exists(uid):
-    await db.users.update_one({"_id": uid}, {"$setOnInsert": {"coins": 40}}, upsert=True)
+async def add_video(msg_id, unique_id=None):
+    data = {"msg_id": msg_id}
+    if unique_id:
+        data["unique_id"] = unique_id
+    await db.videos.update_one({"msg_id": msg_id}, {"$set": data}, upsert=True)
+
+async def delete_after_delay(bot, chat_id, message_id, delay):
+    await asyncio.sleep(delay)
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except:
+        pass
 
 def join_button_text(channel):
     return f"Join {channel.get('name')}" if channel.get('name') else (
         f"Join @{channel['username']}" if channel['type'] == 'public' else "Join Private"
     )
 
+# --- Force Join Logic ---
 async def check_force_join(uid, bot):
     join_buttons = []
     joined_all = True
-
     for channel in FORCE_JOIN_CHANNELS:
         try:
             if channel["type"] == "public":
@@ -57,11 +68,10 @@ async def check_force_join(uid, bot):
                     joined_all = False
                     join_buttons.append(InlineKeyboardButton(join_button_text(channel), url=f"https://t.me/{channel['username']}"))
             elif channel["type"] == "private":
-                chat_id = channel["chat_id"]
-                member = await bot.get_chat_member(chat_id, uid)
+                member = await bot.get_chat_member(channel["chat_id"], uid)
                 if member.status in ["left", "kicked"]:
                     joined_all = False
-                    invite = await bot.create_chat_invite_link(chat_id=chat_id, name="ForceJoin", creates_join_request=False)
+                    invite = await bot.create_chat_invite_link(chat_id=channel["chat_id"], name="ForceJoin", creates_join_request=False)
                     join_buttons.append(InlineKeyboardButton(join_button_text(channel), url=invite.invite_link))
         except:
             joined_all = False
@@ -73,103 +83,91 @@ async def check_force_join(uid, bot):
                     join_buttons.append(InlineKeyboardButton(join_button_text(channel), url=invite.invite_link))
             except:
                 pass
-
     return joined_all, join_buttons
 
-# --- HANDLERS ---
+# --- Welcome Message ---
+async def send_welcome(uid, context):
+    user = await db.users.find_one({"_id": uid})
+    if not user:
+        await db.users.update_one({"_id": uid}, {"$set": {"coins": 40}}, upsert=True)
+    bot_name = (await context.bot.get_me()).first_name
+    await context.bot.send_photo(uid, photo=WELCOME_IMAGE, caption=f"🧵 Welcome to {bot_name}!\nHere you will access the most unseen 💦 videos.\n👇 Tap below to explore:", reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("📩 Get Random Video", callback_data="get_video")],
+        [InlineKeyboardButton("Developer", url=DEVELOPER_LINK)],
+        [InlineKeyboardButton("Support", url=SUPPORT_LINK), InlineKeyboardButton("Help", callback_data="show_privacy_info")]
+    ]))
+    await context.bot.send_message(uid, "⚠️ Disclaimer ⚠️\n\nWe do NOT produce or spread adult content.\nThis bot is only for forwarding files.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📘 Terms & Conditions", url=TERMS_LINK)]]), parse_mode="Markdown")
 
+# --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = update.effective_user
-
     if await db.banned.find_one({"_id": uid}):
-        return await update.message.reply_text("🛑 You are banned from using this bot.")
-
+        return await update.message.reply_text("🚫 You are banned from using this bot.")
     joined_all, join_buttons = await check_force_join(uid, context.bot)
     if not joined_all:
         join_buttons.append(InlineKeyboardButton("✅ I Joined", callback_data="force_check"))
-        return await update.message.reply_text(
-            "🛑 You must join all required channels to use this bot:",
-            reply_markup=InlineKeyboardMarkup([[btn] for btn in join_buttons])
-        )
-
-    await ensure_user_exists(uid)
-
-    if context.args:
-        try:
-            ref_id = int(context.args[0])
-            if ref_id != uid and not await db.users.find_one({"_id": uid, "referred": True}):
-                await db.users.update_one({"_id": ref_id}, {"$inc": {"coins": 12}})
-                await db.users.update_one({"_id": uid}, {"$set": {"referred": True}})
-                await context.bot.send_message(ref_id, "🎉 You earned 12 coins by referring a user!")
-        except:
-            pass
-
-    await context.bot.send_message(
-        LOG_CHANNEL_ID,
-        f"📅 New User Joined\nName: {user.full_name}\nID: {user.id}\nUsername: @{user.username or 'N/A'}"
-    )
-
+        return await update.message.reply_text("🚫 You must join all required channels to use this bot:", reply_markup=InlineKeyboardMarkup([[btn] for btn in join_buttons]))
+    await db.users.update_one({"_id": uid}, {"$setOnInsert": {"coins": 40}}, upsert=True)
+    await context.bot.send_message(LOG_CHANNEL_ID, f"📅 New User Started Bot\n👤 Name: {user.full_name}\n🔔 ID: {user.id}\n💼 Username: @{user.username or 'N/A'}")
     await send_welcome(uid, context)
 
 async def force_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try: await query.answer()
+    except: pass
     uid = query.from_user.id
-
     joined_all, join_buttons = await check_force_join(uid, context.bot)
     if not joined_all:
         join_buttons.append(InlineKeyboardButton("✅ I Joined", callback_data="force_check"))
-        return await query.message.edit_text(
-            "❗ You still haven't joined all required channels.",
-            reply_markup=InlineKeyboardMarkup([[btn] for btn in join_buttons])
-        )
-
-    await ensure_user_exists(uid)
+        return await query.message.edit_text("❗ You still haven't joined all required channels.", reply_markup=InlineKeyboardMarkup([[btn] for btn in join_buttons]))
+    await db.users.update_one({"_id": uid}, {"$set": {"_id": uid}}, upsert=True)
     await query.message.delete()
     await send_welcome(uid, context)
 
-async def send_welcome(uid, context):
-    coins = (await db.users.find_one({"_id": uid}) or {}).get("coins", 0)
-    await context.bot.send_photo(
-        uid,
-        photo=WELCOME_IMAGE,
-        caption=f"🥵 Welcome! You have {coins} coins.\n\nGet unseen videos using your coins.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📈 Get Random Video", callback_data="get_video")],
-            [InlineKeyboardButton("💸 Buy Premium", url=BUY_PREMIUM_URL), InlineKeyboardButton("📅 Your Coins", callback_data="check_coins")],
-            [InlineKeyboardButton("Developer", url=DEVELOPER_LINK)],
-            [InlineKeyboardButton("Support", url=SUPPORT_LINK), InlineKeyboardButton("Terms", url=TERMS_LINK)]
-        ])
-    )
-
 async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try: await query.answer()
+    except: pass
     uid = query.from_user.id
-
-    await ensure_user_exists(uid)
+    if await db.banned.find_one({"_id": uid}):
+        return await query.message.reply_text("🚫 You are banned from using this bot.")
     user = await db.users.find_one({"_id": uid})
-    if user.get("coins", 0) < 1:
-        return await query.message.reply_text(
-            f"🚫 You have no coins left!\n\nRefer friends to earn coins:\nhttps://t.me/{(await context.bot.get_me()).username}?start={uid}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("💸 Buy Premium", url=BUY_PREMIUM_URL)],
-                [InlineKeyboardButton("📅 Your Coins", callback_data="check_coins")]
-            ])
-        )
+    if not user:
+        user = {"_id": uid, "coins": 40}
+        await db.users.insert_one(user)
+    if user.get("coins", 0) < 4:
+        return await query.message.reply_text(f"🚫 You need at least 4 coins to get 4 videos.\n\nRefer friends to earn coins:\nhttps://t.me/{(await context.bot.get_me()).username}?start={uid}", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💸 Buy Premium", url=BUY_PREMIUM_URL)],
+            [InlineKeyboardButton("Check Coins", callback_data="check_coins")]
+        ]))
+    user_videos_doc = await db.user_videos.find_one({"_id": uid})
+    seen = user_videos_doc.get("seen", []) if user_videos_doc else []
+    video_docs = await db.videos.aggregate([{"$match": {"msg_id": {"$nin": seen}}}, {"$sample": {"size": 4}}]).to_list(4)
+    if not video_docs:
+        return await query.message.reply_text("📝 No more unseen videos. Please wait for more uploads.")
+    for video in video_docs:
+        msg_id = video["msg_id"]
+        try:
+            sent = await context.bot.copy_message(chat_id=uid, from_chat_id=VAULT_CHANNEL_ID, message_id=msg_id, protect_content=True)
+            await db.user_videos.update_one({"_id": uid}, {"$addToSet": {"seen": msg_id}}, upsert=True)
+            context.application.create_task(delete_after_delay(context.bot, uid, sent.message_id, 3600))
+        except BadRequest as e:
+            if "MESSAGE_ID_INVALID" in str(e):
+                await db.videos.delete_one({"msg_id": msg_id})
+                await db.user_videos.update_many({}, {"$pull": {"seen": msg_id}})
+                await context.bot.send_message(LOG_CHANNEL_ID, f"⚠️ Removed broken video `{msg_id}`", parse_mode="Markdown")
+                return await callback_get_video(update, context)
+            else:
+                return
+        except TelegramError:
+            return
+        except:
+            return
+    await db.users.update_one({"_id": uid}, {"$inc": {"coins": -4}})
+    await context.bot.send_message(chat_id=uid, text="This video will auto-destruct in 1 hour ⏳", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📅 Get More Random Videos", callback_data="get_video")]]))
 
-    video_doc = await db.videos.aggregate([{"$sample": {"size": 1}}]).to_list(1)
-    if not video_doc:
-        return await query.message.reply_text("📅 No videos available yet.")
-
-    msg_id = video_doc[0]["msg_id"]
-    try:
-        await context.bot.copy_message(uid, VAULT_CHANNEL_ID, msg_id)
-        await db.users.update_one({"_id": uid}, {"$inc": {"coins": -1}})
-    except:
-        return
-
+# --- Other Features ---
 async def check_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.callback_query.from_user.id
     user = await db.users.find_one({"_id": uid})
@@ -177,17 +175,34 @@ async def check_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     await update.callback_query.message.reply_text(f"💰 You currently have {coins} coins.")
 
-async def addcoin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    try:
-        target = int(context.args[0])
-        qty = int(context.args[1])
-        await db.users.update_one({"_id": target}, {"$inc": {"coins": qty}})
-        await update.message.reply_photo(InputFile("certificate.jpg"), caption=f"🌟 Added {qty} coins to {target}")
-    except:
-        await update.message.reply_text("Usage: /addcoin user_id qty")
+async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not await is_sudo(uid): return
+    if update.message.video:
+        video = update.message.video
+        unique_id = video.file_unique_id
+        existing = await db.videos.find_one({"unique_id": unique_id})
+        if existing:
+            return await update.message.reply_text("⚠️ This video already exists in the vault.")
+        try:
+            sent = await context.bot.copy_message(chat_id=VAULT_CHANNEL_ID, from_chat_id=update.message.chat_id, message_id=update.message.message_id)
+            await add_video(sent.message_id, unique_id=unique_id)
+            await update.message.reply_text("✅ Uploaded to vault and saved.")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Upload failed: {e}")
+            await context.bot.send_message(LOG_CHANNEL_ID, f"❌ Upload error by {uid}: {e}")
 
-# --- Admin / Sudo Commands ---
+# --- Admin & Command Handlers ---
+async def show_privacy_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try: await update.callback_query.answer()
+    except: pass
+    await update.callback_query.message.reply_text("/privacy - View bot's Terms and Conditions")
+
+async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.forward_message(chat_id=update.effective_chat.id, from_chat_id="@bot_backup", message_id=7)
+    except:
+        await update.message.reply_text("⚠️ Could not fetch privacy policy.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Need help? Contact the developer.")
@@ -248,29 +263,25 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = await db.users.count_documents({})
     s = await db.sudos.count_documents({})
     b = await db.banned.count_documents({})
-    await update.message.reply_text(
-        f"📊 Bot Stats\n\n🎞 Videos: {v}\n👥 Users: {u}\n🛡 Sudo: {s}\n🚫 Banned: {b}",
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text(f"📊 **Bot Stats**\n\n🎮 Videos: `{v}`\n👥 Users: `{u}`\n🛡 Sudo: `{s}`\n🚫 Banned: `{b}`", parse_mode="Markdown")
 
-# --- INIT ---
-
+# --- Main Entry Point ---
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_get_video, pattern="get_video"))
+    app.add_handler(CallbackQueryHandler(show_privacy_info, pattern="show_privacy_info"))
     app.add_handler(CallbackQueryHandler(force_check_callback, pattern="force_check"))
     app.add_handler(CallbackQueryHandler(check_coins, pattern="check_coins"))
-    app.add_handler(CommandHandler("addcoin", addcoin))
+    app.add_handler(CommandHandler("privacy", privacy_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("addsudo", add_sudo))
     app.add_handler(CommandHandler("remsudo", remove_sudo))
     app.add_handler(CommandHandler("ban", ban_user))
     app.add_handler(CommandHandler("unban", unban_user))
-    app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler(["stats", "status"], stats_command))
-
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(MessageHandler(filters.VIDEO, auto_upload))
     app.run_polling()
 
 if __name__ == "__main__":
