@@ -12,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 
-VAULT_CHANNEL_ID = -1002564608005
+VAULT_CHANNEL_ID = -1002810591637
 LOG_CHANNEL_ID = -1002624785490
 FORCE_JOIN_CHANNELS = [
     {"type": "public", "username": "bot_backup", "name": "RASILI CHU💦"},
