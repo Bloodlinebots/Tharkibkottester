@@ -1,4 +1,4 @@
-import os
+            import os
 import asyncio
 import logging
 from telegram import (
@@ -60,10 +60,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     if await db.banned.find_one({"_id": uid}):
-        return await update.message.reply_text("🛑 You are banned from using this bot.")
+        return await update.message.reply_text("🔚 You are banned from using this bot.")
 
     if not await check_force_join(uid, context.bot):
-        return await update.message.reply_text("🛑 Join all required channels to use this bot.")
+        buttons = []
+        for ch in FORCE_JOIN_CHANNELS:
+            if ch["type"] == "public":
+                buttons.append([
+                    InlineKeyboardButton(f"🔗 Join {ch['name']}", url=f"https://t.me/{ch['username']}")
+                ])
+            else:
+                invite_link = await context.bot.create_chat_invite_link(
+                    chat_id=ch["chat_id"],
+                    creates_join_request=False
+                )
+                buttons.append([
+                    InlineKeyboardButton(f"🔗 Join {ch['name']}", url=invite_link.invite_link)
+                ])
+        buttons.append([InlineKeyboardButton("✅ Subscribed", callback_data="check_joined")])
+        markup = InlineKeyboardMarkup(buttons)
+        return await update.message.reply_text(
+            "🚫 You must join our channel to use this bot.\n\n✅ After joining, press 'Subscribed'",
+            reply_markup=markup
+        )
 
     referred_by = None
     if update.message and context.args:
@@ -85,7 +104,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
 
     keyboard = ReplyKeyboardMarkup([
-        ["📽 VIDEO", "📷 PHOTO"],
+        ["🏙 VIDEO", "📷 PHOTO"],
         ["💰 POINTS", "💸 BUY"],
         ["🔗 /refer"]
     ], resize_keyboard=True)
@@ -93,24 +112,42 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_info = await context.bot.get_me()
     bot_name = bot_info.first_name
 
+    inline_buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👨‍💻 Developer", url=DEVELOPER_LINK)],
+        [InlineKeyboardButton("💬 Support", url=SUPPORT_LINK)]
+    ])
+
     await context.bot.send_photo(
         uid,
         photo=WELCOME_IMAGE,
         caption=(
             f"**👋 Welcome to {bot_name}!**\n\n"
             "🎯 Use the buttons below to get started.\n\n"
-            f"👨‍💻 Developer: [UnbornVillian]({DEVELOPER_LINK})\n"
-            f"🛠 Support: [Join Support]({SUPPORT_LINK})"
+            f"✨ Earn coins by referring friends or buy premium!\n\n"
+            f"⚡ Powered by [{bot_name}](https://t.me/{bot_info.username})"
         ),
-        parse_mode="Markdown"
+        parse_mode="Markdown",
+        reply_markup=inline_buttons
     )
+
     await update.message.reply_text("Select an option:", reply_markup=keyboard)
-    await context.bot.send_message(LOG_CHANNEL_ID, f"📥 New User Started Bot\n👤 {user.full_name}\n🆔 {user.id}")
+    await context.bot.send_message(LOG_CHANNEL_ID, f"📅 New User Started Bot\n👤 {user.full_name}\n🆔 {user.id}")
+
+async def joined_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    uid = query.from_user.id
+    await query.answer()
+
+    if await check_force_join(uid, context.bot):
+        await query.edit_message_text("✅ Thank you for joining! Please tap /start again.")
+    else:
+        await query.answer("❌ You haven't joined all required channels!", show_alert=True)
 
 async def send_random(update, context, collection, seen_field, file_type):
     uid = update.effective_user.id
+
     if await db.banned.find_one({"_id": uid}):
-        return await update.message.reply_text("🛑 You are banned from using this bot.")
+        return await update.message.reply_text("🔚 You are banned from using this bot.")
 
     user_doc = await db.users.find_one({"_id": uid})
     if not is_admin(uid) and user_doc.get("points", 0) < 1:
@@ -125,7 +162,7 @@ async def send_random(update, context, collection, seen_field, file_type):
     ]).to_list(1)
 
     if not doc:
-        return await update.message.reply_text("📭 No more unseen items.")
+        return await update.message.reply_text("📬 No more unseen items.")
 
     msg_id = doc[0]["msg_id"]
     try:
@@ -220,6 +257,7 @@ def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(joined_callback, pattern="check_joined"))
     app.add_handler(CommandHandler("video", video_command))
     app.add_handler(CommandHandler("photo", photo_command))
     app.add_handler(CommandHandler("points", points_command))
@@ -227,7 +265,7 @@ def main():
     app.add_handler(CommandHandler("buy", buy_command))
     app.add_handler(CommandHandler("addpoints", addpoints_command))
 
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)📽 VIDEO"), video_command))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)🏙 VIDEO"), video_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)📷 PHOTO"), photo_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)💰 POINTS"), points_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex(r"(?i)💸 BUY"), buy_command))
