@@ -14,14 +14,12 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # ----- CONFIG -----
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-
 VAULT_CHANNEL_ID = -1002564608005
 LOG_CHANNEL_ID = -1002624785490
 FORCE_JOIN_CHANNELS = [
     {"type": "public", "username": "bot_backup", "name": "RASILI CHU💦"},
     {"type": "private", "chat_id": -1002799718375, "name": "RASMALAI🥵"}
 ]
-
 ADMIN_USER_ID = 7755789304
 DEFAULT_POINTS = 20
 REFERRAL_REWARD = 25
@@ -34,32 +32,20 @@ db = client["telegram_bot"]
 def is_admin(uid):
     return uid == ADMIN_USER_ID
 
-async def is_sudo(uid):
-    sudo_list = [s["_id"] async for s in db.sudos.find()]
-    return uid in sudo_list or is_admin(uid)
-
-async def add_video(msg_id, unique_id=None):
-    data = {"msg_id": msg_id}
-    if unique_id:
-        data["unique_id"] = unique_id
-    await db.videos.update_one({"msg_id": msg_id}, {"$set": data}, upsert=True)
-
 async def check_force_join(uid, bot):
-    joined_all = True
     for channel in FORCE_JOIN_CHANNELS:
         try:
             if channel["type"] == "public":
                 member = await bot.get_chat_member(f"@{channel['username']}", uid)
                 if member.status in ["left", "kicked"]:
-                    joined_all = False
+                    return False
             elif channel["type"] == "private":
-                chat_id = channel["chat_id"]
-                member = await bot.get_chat_member(chat_id, uid)
+                member = await bot.get_chat_member(channel["chat_id"], uid)
                 if member.status in ["left", "kicked"]:
-                    joined_all = False
+                    return False
         except:
-            joined_all = False
-    return joined_all
+            return False
+    return True
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -68,118 +54,111 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await db.banned.find_one({"_id": uid}):
         return await update.message.reply_text("🛑 You are banned from using this bot.")
 
-    joined_all = await check_force_join(uid, context.bot)
-    if not joined_all:
+    if not await check_force_join(uid, context.bot):
         return await update.message.reply_text("🛑 Join all required channels to use this bot.")
 
-    # Referral system
+    # Referral
     args = context.args
     referred_by = int(args[0]) if args and args[0].isdigit() else None
     existing = await db.users.find_one({"_id": uid})
     if not existing:
         await db.users.insert_one({"_id": uid, "points": DEFAULT_POINTS})
         if referred_by and referred_by != uid:
-            already = await db.referrals.find_one({"_id": uid})
-            if not already:
+            if not await db.referrals.find_one({"_id": uid}):
                 await db.referrals.insert_one({"_id": uid, "by": referred_by})
                 await db.users.update_one({"_id": referred_by}, {"$inc": {"points": REFERRAL_REWARD}})
-                await context.bot.send_message(
-                    referred_by,
-                    f"🎉 You earned {REFERRAL_REWARD} coins for referring!"
-                )
+                await context.bot.send_message(referred_by, f"🎉 You earned {REFERRAL_REWARD} coins for referring!")
 
-    # Menu reply buttons
-    reply_keyboard = [
+    keyboard = ReplyKeyboardMarkup([
         ["📽 VIDEO", "📷 PHOTO"],
         ["💰 POINTS"],
         ["🔗 /REFER"]
-    ]
-    markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+    ], resize_keyboard=True)
 
-    await context.bot.send_photo(
-        uid,
-        photo=WELCOME_IMAGE,
-        caption="Welcome to the bot! Use buttons below or type commands."
-    )
+    await context.bot.send_photo(uid, photo=WELCOME_IMAGE, caption="Welcome! Use the buttons below.")
+    await update.message.reply_text("Select an option:", reply_markup=keyboard)
+    await context.bot.send_message(LOG_CHANNEL_ID, f"📥 New User Started Bot\n👤 {user.full_name}\n🆔 {user.id}")
 
-    await update.message.reply_text(
-        "Choose an option below 👇",
-        reply_markup=markup
-    )
-
-    await context.bot.send_message(
-        LOG_CHANNEL_ID,
-        f"📥 New User Started Bot\n👤 Name: {user.full_name}\n🆔 ID: {user.id}\n📛 Username: @{user.username or 'N/A'}"
-    )
-
-async def video_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def send_random(update, context, collection, seen_field, file_type):
     uid = update.effective_user.id
     if await db.banned.find_one({"_id": uid}):
         return await update.message.reply_text("🛑 You are banned from using this bot.")
 
     user_doc = await db.users.find_one({"_id": uid})
-    points = user_doc.get("points", 0)
-    if points < 1:
-        return await update.message.reply_text(
-            "🥺 No coins left! Refer friends or buy premium."
-        )
+    if user_doc.get("points", 0) < 1:
+        return await update.message.reply_text("🥺 No coins left! Refer friends or buy premium.")
 
-    seen_doc = await db.user_videos.find_one({"_id": uid})
+    seen_doc = await db[seen_field].find_one({"_id": uid})
     seen = seen_doc.get("seen", []) if seen_doc else []
 
-    video_doc = await db.videos.aggregate([
+    doc = await db[collection].aggregate([
         {"$match": {"msg_id": {"$nin": seen}}},
         {"$sample": {"size": 1}}
     ]).to_list(1)
 
-    if not video_doc:
-        return await update.message.reply_text("📭 No more unseen videos.")
+    if not doc:
+        return await update.message.reply_text("📭 No more unseen items.")
 
-    video = video_doc[0]
-    msg_id = video["msg_id"]
+    msg_id = doc[0]["msg_id"]
     try:
-        await context.bot.copy_message(uid, VAULT_CHANNEL_ID, msg_id, protect_content=True)
+        if file_type == "video":
+            await context.bot.copy_message(uid, VAULT_CHANNEL_ID, msg_id, protect_content=True)
+        else:
+            await context.bot.copy_message(uid, VAULT_CHANNEL_ID, msg_id)
         await db.users.update_one({"_id": uid}, {"$inc": {"points": -1}})
-        await db.user_videos.update_one({"_id": uid}, {"$addToSet": {"seen": msg_id}}, upsert=True)
+        await db[seen_field].update_one({"_id": uid}, {"$addToSet": {"seen": msg_id}}, upsert=True)
     except:
-        return await update.message.reply_text("⚠️ Error sending video.")
+        await update.message.reply_text("⚠️ Error sending item.")
+
+async def video_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_random(update, context, "videos", "user_videos", "video")
+
+async def photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_random(update, context, "photos", "user_photos", "photo")
 
 async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = await db.users.find_one({"_id": uid})
-    points = user.get("points", 0)
-    await update.message.reply_text(f"💰 You have {points} points left.", parse_mode="Markdown")
+    await update.message.reply_text(f"💰 You have {user.get('points', 0)} points left.")
 
 async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     username = (await context.bot.get_me()).username
-    await update.message.reply_text(
-        f"🔗 Share this link to earn {REFERRAL_REWARD} coins: https://t.me/{username}?start={uid}"
-    )
+    await update.message.reply_text(f"🔗 Refer link: https://t.me/{username}?start={uid}")
+
+async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_admin(uid):
+        return
+
+    if update.message.video:
+        file_id = update.message.video.file_unique_id
+        existing = await db.videos.find_one({"unique_id": file_id})
+        if not existing:
+            await db.videos.insert_one({"msg_id": update.message.message_id, "unique_id": file_id})
+            await update.message.reply_text("✅ Video saved to vault.")
+
+    elif update.message.photo:
+        photo_id = update.message.photo[-1].file_unique_id
+        existing = await db.photos.find_one({"unique_id": photo_id})
+        if not existing:
+            await db.photos.insert_one({"msg_id": update.message.message_id, "unique_id": photo_id})
+            await update.message.reply_text("✅ Photo saved to vault.")
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("video", video_command))
+    app.add_handler(CommandHandler("photo", photo_command))
     app.add_handler(CommandHandler("points", points_command))
     app.add_handler(CommandHandler("refer", refer_command))
 
-    # Text-based menu button matches
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📽 VIDEO"), video_command))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📷 PHOTO"), photo_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("💰 POINTS"), points_command))
-    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("🔗 /REFER"), refer_command))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.PHOTO, auto_upload))
 
-    # Set menu for /
-    async def set_menu(application):
-        await application.bot.set_my_commands([
-            BotCommand("video", "Get 1 Random Video 🎥"),
-            BotCommand("photo", "Coming soon 📷"),
-            BotCommand("points", "Check your coin balance 🏅"),
-            BotCommand("refer", "Refer friends & earn coins 🔗")
-        ])
-
-    app.post_init = set_menu
     app.run_polling()
 
 if __name__ == "__main__":
