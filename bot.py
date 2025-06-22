@@ -1,6 +1,9 @@
 import os
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    BotCommand, ReplyKeyboardMarkup
+)
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ContextTypes, filters
@@ -85,10 +88,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🎉 You earned {REFERRAL_REWARD} coins for referring!"
                 )
 
+    # Menu reply buttons
+    reply_keyboard = [
+        ["📽 VIDEO", "📷 PHOTO"],
+        ["💰 POINTS"],
+        ["🔗 /REFER"]
+    ]
+    markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+
     await context.bot.send_photo(
         uid,
         photo=WELCOME_IMAGE,
-        caption="Welcome to the bot! Use /video to get video, /points to check coins."
+        caption="Welcome to the bot! Use buttons below or type commands."
+    )
+
+    await update.message.reply_text(
+        "Choose an option below 👇",
+        reply_markup=markup
     )
 
     await context.bot.send_message(
@@ -149,8 +165,14 @@ def main():
     app.add_handler(CommandHandler("points", points_command))
     app.add_handler(CommandHandler("refer", refer_command))
 
-    async def set_menu():
-        await app.bot.set_my_commands([
+    # Text-based menu button matches
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("📽 VIDEO"), video_command))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("💰 POINTS"), points_command))
+    app.add_handler(MessageHandler(filters.TEXT & filters.Regex("🔗 /REFER"), refer_command))
+
+    # Set menu for /
+    async def set_menu(application):
+        await application.bot.set_my_commands([
             BotCommand("video", "Get 1 Random Video 🎥"),
             BotCommand("photo", "Coming soon 📷"),
             BotCommand("points", "Check your coin balance 🏅"),
