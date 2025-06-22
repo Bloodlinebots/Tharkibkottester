@@ -163,12 +163,12 @@ async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = [
-        [InlineKeyboardButton("📈 Point Prices", url="https://t.me/your_pricing_channel")],
-        [InlineKeyboardButton("💬 Contact Owner", url=DEVELOPER_LINK)]
+        [InlineKeyboardButton("📈 payment issue", url="https://t.me/unbornvillian")],
+        [InlineKeyboardButton("💬 Contact owner", url="https://t.me/PSYCHO_X_KING")]
     ]
     reply_markup = InlineKeyboardMarkup(buttons)
     await update.message.reply_photo(
-        photo="https://graph.org/file/55ccf9b9e08fa4ce5f278.jpg",
+        photo="https://graph.org/file/0921938be954fb02160e8-6a599c5fb10268f7b2.jpg",
         caption=(
             "💸 Purchase Points Now! 💸\n\n"
             "✅ Want to Buy more points?\n"
