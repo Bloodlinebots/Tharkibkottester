@@ -10,7 +10,7 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 from motor.motor_asyncio import AsyncIOMotorClient
-from admin_handle import admin_command, admin_callback  # Admin panel
+from admin_handle import admin_command, admin_callback
 from broadcast_bot import handle_broadcast, handle_gift_points
 
 # --- LOGGING ---
@@ -164,7 +164,6 @@ async def send_random(update, context, collection, seen_field, file_type):
 
     await db[seen_field].update_one({"_id": uid}, {"$addToSet": {"seen": msg_id}}, upsert=True)
 
-# --- Commands ---
 async def video_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_random(update, context, "videos", "user_videos", "video")
 
@@ -208,12 +207,21 @@ async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     try:
         if msg.video:
-            return await msg.reply_text("❌ Video uploads are disabled.")
+            file_id = msg.video.file_unique_id
+            if not await db.videos.find_one({"unique_id": file_id}):
+                await db.videos.insert_one({"msg_id": msg.message_id, "unique_id": file_id})
+                await msg.reply_text("✅ Video saved to vault.")
+            else:
+                await msg.reply_text("⚠️ This video is already in the vault.")
+
         elif msg.photo:
             file_id = msg.photo[-1].file_unique_id
             if not await db.photos.find_one({"unique_id": file_id}):
                 await db.photos.insert_one({"msg_id": msg.message_id, "unique_id": file_id})
-                await msg.reply_text("✅ Photo saved.")
+                await msg.reply_text("✅ Photo saved to vault.")
+            else:
+                await msg.reply_text("⚠️ This photo is already in the vault.")
+
     except Exception as e:
         logger.error(f"[Auto Upload] Error: {e}")
         await msg.reply_text("❌ Upload failed.")
@@ -250,17 +258,17 @@ def main():
     app.add_handler(CallbackQueryHandler(joined_callback, pattern="check_joined"))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
 
-    # Button Handlers
+    # Button Text Handlers
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)🏙 VIDEO"), video_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)📷 PHOTO"), photo_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)💰 POINTS"), points_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)💸 BUY"), buy_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)/refer"), refer_command))
 
-    # Upload Handler
-    app.add_handler(MessageHandler(filters.PHOTO, auto_upload))
+    # Upload handler
+    app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, auto_upload))
 
-    # Broadcast & Gift Logic
+    # Broadcast & Gift logic
     app.add_handler(MessageHandler(filters.TEXT & filters.ALL, handle_broadcast))
     app.add_handler(MessageHandler(filters.TEXT & filters.ALL, handle_gift_points))
 
