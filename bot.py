@@ -60,7 +60,7 @@ async def check_force_join(uid, bot):
             logger.warning(f"[ForceJoin] Error: {e}")
             return False
     return True
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = update.effective_user
 
@@ -91,15 +91,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referred_by = None
 
     # First time user logic
-    if not await db.users.find_one({"_id": uid}):
+    user_doc = await db.users.find_one({"_id": uid})
+    if not user_doc:
         await db.users.insert_one({"_id": uid, "points": DEFAULT_POINTS})
-        if referred_by and not await db.referrals.find_one({"_id": uid}):
+        if referred_by:
             await db.referrals.insert_one({"_id": uid, "by": referred_by})
             await db.users.update_one({"_id": referred_by}, {"$inc": {"points": REFERRAL_REWARD}})
             try:
                 await context.bot.send_message(referred_by, f"🎉 You earned {REFERRAL_REWARD} coins for referring!")
-            except:
-                pass
+            except Exception as e:
+                logger.warning(f"Referral notify failed: {e}")
+    else:
+        if "points" not in user_doc:
+            await db.users.update_one({"_id": uid}, {"$set": {"points": DEFAULT_POINTS}})
 
     # Welcome message
     bot_info = await context.bot.get_me()
@@ -126,14 +130,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("👇 Select an option:", reply_markup=main_keyboard())
     await context.bot.send_message(LOG_CHANNEL_ID, f"👤 New user: {user.full_name} | ID: {uid}")
-
-# Callback for "✅ Subscribed" button
+    # --- Callback for "✅ Subscribed" button ---
 async def joined_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if await check_force_join(query.from_user.id, context.bot):
         await query.edit_message_text("✅ Subscribed! Now use /start again.")
     else:
         await query.answer("❌ You haven't joined all required channels.", show_alert=True)
+
+# --- Media sender utility (used by both /photo and /video) ---
 async def send_random(update, context, collection, seen_field):
     uid = update.effective_user.id
 
@@ -168,24 +173,27 @@ async def send_random(update, context, collection, seen_field):
 
     await db[seen_field].update_one({"_id": uid}, {"$addToSet": {"seen": msg_id}}, upsert=True)
 
+# --- Command handlers for photo/video ---
 async def video_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_random(update, context, "videos", "user_videos")
 
 async def photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_random(update, context, "photos", "user_photos")
-
+    # --- Check current points ---
 async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = await db.users.find_one({"_id": uid})
     points = user.get("points", 0) if user else 0
     await update.message.reply_text(f"💰 You have {points} coins.")
 
+# --- Referral link command ---
 async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     bot_info = await context.bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={uid}"
     await update.message.reply_text(f"🔗 Your referral link:\n{link}")
 
+# --- Buy coins command ---
 async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = [
         [InlineKeyboardButton("📈 Payment Help", url=DEVELOPER_LINK)],
@@ -196,7 +204,8 @@ async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption="💸 Buy more coins now!\nContact the owner for safe transactions.",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
-    # --- Upload Handler (auto-save to vault) ---
+
+# --- Upload handler (Admin-only auto save) ---
 async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -231,9 +240,7 @@ async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"[Upload Error] {e}")
         await msg.reply_text("❌ Upload failed.")
-
-
-# --- Admin Panel UI ---
+        # --- Admin Panel UI ---
 def get_admin_panel():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Stats", callback_data="admin_stats")],
@@ -248,13 +255,13 @@ def back_button():
         [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
     ])
 
-# --- Admin Commands ---
+# --- /admin command ---
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Access denied.")
     await update.message.reply_text("🧑‍💻 Welcome to Admin Panel", reply_markup=get_admin_panel())
 
-
+# --- Admin panel button callbacks ---
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid = query.from_user.id
@@ -286,6 +293,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif query.data == "admin_broadcast":
+        context.user_data.clear()
         context.user_data["awaiting_broadcast"] = True
         await query.edit_message_text(
             "📢 Send the message to broadcast.",
@@ -293,6 +301,7 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif query.data == "admin_gift":
+        context.user_data.clear()
         context.user_data["awaiting_gift"] = True
         await query.edit_message_text(
             "🎁 Send number of coins to gift all users.",
@@ -335,8 +344,7 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = int(args[0])
     await db.banned.delete_one({"_id": uid})
     await update.message.reply_text(f"✅ User {uid} has been unbanned.")
-
-# --- Broadcast Handler ---
+    # --- Broadcast message handler ---
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -354,7 +362,7 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed += 1
     await update.message.reply_text(f"✅ Broadcast Done!\n📤 Sent: {total}\n❌ Failed: {failed}")
 
-# --- Gift Points Handler ---
+# --- Gift points to all users handler ---
 async def handle_gift_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -369,7 +377,8 @@ async def handle_gift_points(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     total = 0
     async for user in db.users.find({}):
-        if await db.banned.find_one({"_id": user["_id"]}): continue
+        if await db.banned.find_one({"_id": user["_id"]}):
+            continue
         await db.users.update_one({"_id": user["_id"]}, {"$inc": {"points": coins}})
         total += 1
     await update.message.reply_text(f"✅ Gifted {coins} coins to {total} users.")
@@ -405,7 +414,7 @@ def main():
     # Uploads from Admin
     app.add_handler(MessageHandler(filters.VIDEO | filters.PHOTO, auto_upload))
 
-    # Admin text handlers
+    # Admin Input Handlers
     app.add_handler(MessageHandler(filters.TEXT & filters.ALL, handle_broadcast))
     app.add_handler(MessageHandler(filters.TEXT & filters.ALL, handle_gift_points))
 
