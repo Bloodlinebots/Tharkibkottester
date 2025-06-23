@@ -2,8 +2,15 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.error import TelegramError
 
+ADMIN_ID = 7755789304  # Match this with admin_handle.py
+
+def is_admin(uid): return uid == ADMIN_ID
+
 # --- Broadcast Handler ---
 async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
     if not context.user_data.get("awaiting_broadcast"):
         return
 
@@ -29,6 +36,9 @@ async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Gift Points Handler ---
 async def handle_gift_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
     if not context.user_data.get("awaiting_gift"):
         return
 
