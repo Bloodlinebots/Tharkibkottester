@@ -1,7 +1,7 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-ADMIN_ID = 7755789304  # Change as needed
+ADMIN_ID = 7755789304  # Change if needed
 
 def is_admin(uid): return uid == ADMIN_ID
 
@@ -14,6 +14,11 @@ def get_admin_panel():
         [InlineKeyboardButton("🎁 Send Points to All", callback_data="admin_gift")]
     ]
     return InlineKeyboardMarkup(buttons)
+
+def back_button():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
+    ])
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -67,7 +72,5 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_button()
         )
 
-def back_button():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
-    ])
+    elif query.data == "admin_back":
+        await query.edit_message_text("🔙 Back to Admin Panel", reply_markup=get_admin_panel())
