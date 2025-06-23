@@ -60,15 +60,15 @@ async def check_force_join(uid, bot):
             logger.warning(f"[ForceJoin] Error: {e}")
             return False
     return True
-    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+# --- /start command ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = update.effective_user
 
-    # Banned user check
     if await db.banned.find_one({"_id": uid}):
         return await update.message.reply_text("❌ You are banned from using this bot.")
 
-    # Force Join Check
     if not await check_force_join(uid, context.bot):
         buttons = []
         for ch in FORCE_JOIN_CHANNELS:
@@ -83,14 +83,12 @@ async def check_force_join(uid, bot):
             reply_markup=InlineKeyboardMarkup(buttons)
         )
 
-    # Referral logic
     referred_by = None
     if context.args and context.args[0].isdigit():
         referred_by = int(context.args[0])
         if referred_by == uid:
             referred_by = None
 
-    # First time user logic
     user_doc = await db.users.find_one({"_id": uid})
     if not user_doc:
         await db.users.insert_one({"_id": uid, "points": DEFAULT_POINTS})
@@ -105,7 +103,6 @@ async def check_force_join(uid, bot):
         if "points" not in user_doc:
             await db.users.update_one({"_id": uid}, {"$set": {"points": DEFAULT_POINTS}})
 
-    # Welcome message
     bot_info = await context.bot.get_me()
     caption = (
         f"👋 **Welcome to {bot_info.first_name}**\n\n"
@@ -130,7 +127,7 @@ async def check_force_join(uid, bot):
 
     await update.message.reply_text("👇 Select an option:", reply_markup=main_keyboard())
     await context.bot.send_message(LOG_CHANNEL_ID, f"👤 New user: {user.full_name} | ID: {uid}")
-    # --- Callback for "✅ Subscribed" button ---
+    # --- Subscribed Button Callback ---
 async def joined_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if await check_force_join(query.from_user.id, context.bot):
@@ -138,7 +135,7 @@ async def joined_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.answer("❌ You haven't joined all required channels.", show_alert=True)
 
-# --- Media sender utility (used by both /photo and /video) ---
+# --- Send Random Media Helper ---
 async def send_random(update, context, collection, seen_field):
     uid = update.effective_user.id
 
@@ -173,27 +170,25 @@ async def send_random(update, context, collection, seen_field):
 
     await db[seen_field].update_one({"_id": uid}, {"$addToSet": {"seen": msg_id}}, upsert=True)
 
-# --- Command handlers for photo/video ---
+# --- Commands ---
 async def video_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_random(update, context, "videos", "user_videos")
 
 async def photo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_random(update, context, "photos", "user_photos")
-    # --- Check current points ---
+
 async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     user = await db.users.find_one({"_id": uid})
     points = user.get("points", 0) if user else 0
     await update.message.reply_text(f"💰 You have {points} coins.")
 
-# --- Referral link command ---
 async def refer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     bot_info = await context.bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={uid}"
     await update.message.reply_text(f"🔗 Your referral link:\n{link}")
 
-# --- Buy coins command ---
 async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = [
         [InlineKeyboardButton("📈 Payment Help", url=DEVELOPER_LINK)],
@@ -205,7 +200,7 @@ async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(buttons)
     )
 
-# --- Upload handler (Admin-only auto save) ---
+# --- Admin Upload ---
 async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -224,7 +219,6 @@ async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("✅ Video saved to vault.")
             else:
                 await msg.reply_text("⚠️ Already in vault.")
-
         elif msg.photo:
             unique_id = msg.photo[-1].file_unique_id
             exists = await db.photos.find_one({"unique_id": unique_id})
@@ -240,7 +234,8 @@ async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"[Upload Error] {e}")
         await msg.reply_text("❌ Upload failed.")
-        # --- Admin Panel UI ---
+
+# --- Admin Panel ---
 def get_admin_panel():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 Stats", callback_data="admin_stats")],
@@ -251,17 +246,13 @@ def get_admin_panel():
     ])
 
 def back_button():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔙 Back", callback_data="admin_back")]
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="admin_back")]])
 
-# --- /admin command ---
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return await update.message.reply_text("❌ Access denied.")
     await update.message.reply_text("🧑‍💻 Welcome to Admin Panel", reply_markup=get_admin_panel())
 
-# --- Admin panel button callbacks ---
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     uid = query.from_user.id
@@ -277,53 +268,32 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Stats:\n👥 Total Users: {total}\n🚫 Banned: {banned}",
             reply_markup=back_button()
         )
-
     elif query.data == "admin_coins":
-        await query.edit_message_text(
-            "💰 Use:\n`/addpoints <user_id> <coins>`",
-            reply_markup=back_button(),
-            parse_mode="Markdown"
-        )
-
+        await query.edit_message_text("💰 Use:\n`/addpoints <user_id> <coins>`", parse_mode="Markdown", reply_markup=back_button())
     elif query.data == "admin_ban":
-        await query.edit_message_text(
-            "❌ Use:\n`/ban <user_id>`\n`/unban <user_id>`",
-            reply_markup=back_button(),
-            parse_mode="Markdown"
-        )
-
+        await query.edit_message_text("❌ Use:\n`/ban <user_id>`\n`/unban <user_id>`", parse_mode="Markdown", reply_markup=back_button())
     elif query.data == "admin_broadcast":
         context.user_data.clear()
         context.user_data["awaiting_broadcast"] = True
-        await query.edit_message_text(
-            "📢 Send the message to broadcast.",
-            reply_markup=back_button()
-        )
-
+        await query.edit_message_text("📢 Send the message to broadcast.", reply_markup=back_button())
     elif query.data == "admin_gift":
         context.user_data.clear()
         context.user_data["awaiting_gift"] = True
-        await query.edit_message_text(
-            "🎁 Send number of coins to gift all users.",
-            reply_markup=back_button()
-        )
-
+        await query.edit_message_text("🎁 Send number of coins to gift all users.", reply_markup=back_button())
     elif query.data == "admin_back":
         await query.edit_message_text("🔙 Back to Admin Panel", reply_markup=get_admin_panel())
-        # --- /addpoints Command ---
+
+# --- Admin Manual Commands ---
 async def addpoints_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
     args = context.args
     if len(args) != 2 or not args[0].isdigit() or not args[1].isdigit():
         return await update.message.reply_text("⚠️ Usage: /addpoints <user_id> <coins>")
-    
-    uid = int(args[0])
-    coins = int(args[1])
+    uid, coins = int(args[0]), int(args[1])
     await db.users.update_one({"_id": uid}, {"$inc": {"points": coins}}, upsert=True)
     await update.message.reply_text(f"✅ Added {coins} coins to user {uid}")
 
-# --- /ban Command ---
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -334,7 +304,6 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await db.banned.update_one({"_id": uid}, {"$set": {"status": "banned"}}, upsert=True)
     await update.message.reply_text(f"🚫 User {uid} has been banned.")
 
-# --- /unban Command ---
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
@@ -344,37 +313,29 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = int(args[0])
     await db.banned.delete_one({"_id": uid})
     await update.message.reply_text(f"✅ User {uid} has been unbanned.")
-    # --- Broadcast message handler ---
-async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    if not context.user_data.get("awaiting_broadcast"):
-        return
 
+# --- Admin Message Handlers ---
+async def handle_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id) or not context.user_data.get("awaiting_broadcast"):
+        return
     context.user_data["awaiting_broadcast"] = False
     total, failed = 0, 0
     async for user in db.users.find({}):
         try:
             await context.bot.send_message(user["_id"], update.message.text)
             total += 1
-        except TelegramError as e:
-            logger.warning(f"[Broadcast Error] {e}")
+        except TelegramError:
             failed += 1
     await update.message.reply_text(f"✅ Broadcast Done!\n📤 Sent: {total}\n❌ Failed: {failed}")
 
-# --- Gift points to all users handler ---
 async def handle_gift_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
+    if not is_admin(update.effective_user.id) or not context.user_data.get("awaiting_gift"):
         return
-    if not context.user_data.get("awaiting_gift"):
-        return
-
     context.user_data["awaiting_gift"] = False
     try:
         coins = int(update.message.text)
     except ValueError:
         return await update.message.reply_text("❌ Invalid number of coins.")
-
     total = 0
     async for user in db.users.find({}):
         if await db.banned.find_one({"_id": user["_id"]}):
@@ -383,12 +344,11 @@ async def handle_gift_points(update: Update, context: ContextTypes.DEFAULT_TYPE)
         total += 1
     await update.message.reply_text(f"✅ Gifted {coins} coins to {total} users.")
 
-# --- MAIN Function ---
+# --- MAIN BOT RUNNER ---
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
-    app.bot_data["db"] = db
 
-    # Command Handlers
+    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("photo", photo_command))
     app.add_handler(CommandHandler("video", video_command))
@@ -400,26 +360,25 @@ def main():
     app.add_handler(CommandHandler("ban", ban_command))
     app.add_handler(CommandHandler("unban", unban_command))
 
-    # Callback Queries
+    # Callback buttons
     app.add_handler(CallbackQueryHandler(joined_callback, pattern="check_joined"))
     app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_"))
 
-    # Button Text Triggers
+    # Reply keyboard triggers
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)🏙 VIDEO"), video_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)📷 PHOTO"), photo_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)💰 POINTS"), points_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)💸 BUY"), buy_command))
     app.add_handler(MessageHandler(filters.TEXT & filters.Regex("(?i)/refer"), refer_command))
 
-    # Uploads from Admin
+    # Admin uploads
     app.add_handler(MessageHandler(filters.VIDEO | filters.PHOTO, auto_upload))
 
-    # Admin Input Handlers
+    # Admin input
     app.add_handler(MessageHandler(filters.TEXT & filters.ALL, handle_broadcast))
     app.add_handler(MessageHandler(filters.TEXT & filters.ALL, handle_gift_points))
 
     app.run_polling()
 
-# --- Run Bot ---
 if __name__ == "__main__":
     main()
