@@ -302,15 +302,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-def delete_webhook_sync():
-    import requests
-    url = f"https://api.telegram.org/bot{TOKEN}/deleteWebhook"
-    try:
-        r = requests.get(url)
-        print("🔧 Webhook deleted:", r.json())
-    except Exception as e:
-        print("❌ Failed to delete webhook:", e)
-
 def main():
     delete_webhook_sync()
 
