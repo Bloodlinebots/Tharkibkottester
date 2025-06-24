@@ -249,11 +249,11 @@ async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
     uid = query.from_user.id
 
     # 🚫 Banned check
-    if await db.banned.find_one({"_id": uid}):
-        return await query.message.reply_text("🚫 <b>You are banned from using this bot.</b>", parse_mode="HTML")
+    # 🚫 Banned check
+if await db.banned.find_one({"_id": uid}):
+    return await query.message.reply_text("🚫 <b>You are banned from using this bot.</b>", parse_mode="HTML")
 
-    # 🧠 View limit check
-    # 🔄 ADD this check before view limit
+# 🔄 Admin limit bypass
 if await is_sudo(uid):
     is_limit_free = True
 else:
