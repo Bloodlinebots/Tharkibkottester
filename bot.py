@@ -1,165 +1,196 @@
 import os
 import asyncio
-from datetime import datetime
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
-)
+import aiohttp
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ContextTypes, filters
 )
-from motor.motor_asyncio import AsyncIOMotorClient
 from telegram.error import BadRequest, TelegramError
+from motor.motor_asyncio import AsyncIOMotorClient
 
-# ----- CONFIG -----
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+
 VAULT_CHANNEL_ID = -1002564608005
 LOG_CHANNEL_ID = -1002624785490
-HELP_VIDEO_MSG_ID = 7  # Your help video message ID
-HELP_VIDEO_CHANNEL = "@bot_backup"  # Channel where it's posted
+FORCE_JOIN_CHANNELS = [
+    {"type": "public", "username": "bot_backup", "name": "RASILI CHU💦"},
+    {"type": "private", "chat_id": -1002799718375, "name": "RASMALAI🥵"}
+]
 ADMIN_USER_ID = 7755789304
+DEVELOPER_LINK = "https://t.me/unbornvillian"
+SUPPORT_LINK = "https://t.me/botmine_tech"
+TERMS_LINK = "https://t.me/bot_backup/7"
+WELCOME_IMAGE = "https://graph.org/file/a13e9733afdad69720d67.jpg"
 
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["telegram_bot"]
 
 def is_admin(uid): return uid == ADMIN_USER_ID
 
-# --- Admin Command: Create Token ---
-async def new_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    if not context.args:
-        return await update.message.reply_text("❌ Usage: /newtoken <TOKEN>")
-    token = context.args[0].strip().upper()
+async def is_sudo(uid):
+    sudo_list = [s["_id"] async for s in db.sudos.find()]
+    return uid in sudo_list or is_admin(uid)
 
-    await db.tokens.insert_one({
-        "_id": token,
-        "active": True,
-        "created_at": datetime.utcnow(),
-        "used_by": []
-    })
+async def add_video(msg_id, unique_id=None):
+    data = {"msg_id": msg_id}
+    if unique_id:
+        data["unique_id"] = unique_id
+    await db.videos.update_one({"msg_id": msg_id}, {"$set": data}, upsert=True)
 
-    await update.message.reply_text(f"✅ New token `{token}` created successfully.", parse_mode="Markdown")
-
-# --- Admin Command: Expire Token ---
-async def expire_token_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    result = await db.tokens.update_many({"active": True}, {"$set": {"active": False}})
-    await update.message.reply_text(f"❌ {result.modified_count} token(s) expired.")
-
-# --- START Command ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    args = context.args
-    user_data = await db.users.find_one({"_id": uid})
-
-    # Referral logic
-    ref_by = int(args[0]) if args and args[0].isdigit() and int(args[0]) != uid else None
-
-    if user_data and user_data.get("verified"):
-        return await send_welcome(uid, context)
-
-    await db.users.update_one({"_id": uid}, {
-        "$setOnInsert": {
-            "verified": False,
-            "coins": 0,
-            "ref_by": ref_by
-        }
-    }, upsert=True)
-
-    # Send help video
+async def delete_after_delay(bot, chat_id, message_id, delay):
+    await asyncio.sleep(delay)
     try:
-        await context.bot.forward_message(
-            chat_id=uid,
-            from_chat_id=HELP_VIDEO_CHANNEL,
-            message_id=HELP_VIDEO_MSG_ID
-        )
+        await bot.delete_message(chat_id, message_id)
     except:
         pass
 
-    await update.message.reply_text(
-        "🔒 Access Restricted\n\nYou need a valid token to use this bot.\nClick below to proceed.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔑 Get Token", url="https://your-site.com/token")],
-            [InlineKeyboardButton("✅ I Have a Token", callback_data="submit_token")]
-        ])
+def join_button_text(channel):
+    return f"Join {channel.get('name')}" if channel.get('name') else (
+        f"Join @{channel['username']}" if channel['type'] == 'public' else "Join Private"
     )
 
-# --- Handle "I Have Token" Button ---
-async def token_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.message.reply_text("✏️ Send your token below to unlock access.")
-
-# --- Handle Text Input as Token ---
-async def handle_token_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    user = await db.users.find_one({"_id": uid})
-    if not user or user.get("verified"):
-        return
-
-    token = update.message.text.strip().upper()
-    token_doc = await db.tokens.find_one({"_id": token, "active": True})
-    if not token_doc:
-        return await update.message.reply_text("❌ Invalid or expired token.")
-
-    await db.tokens.update_one({"_id": token}, {"$addToSet": {"used_by": uid}})
-
-    updates = {"verified": True, "token": token, "coins": 10}
-    ref = user.get("ref_by")
-
-    if ref:
-        await db.users.update_one({"_id": ref}, {"$inc": {"coins": 5}})
+async def check_force_join(uid, bot):
+    join_buttons = []
+    joined_all = True
+    for channel in FORCE_JOIN_CHANNELS:
         try:
-            await context.bot.send_message(ref, "🎁 You earned 5 coins from a referral!")
+            if channel["type"] == "public":
+                member = await bot.get_chat_member(f"@{channel['username']}", uid)
+                if member.status in ["left", "kicked"]:
+                    joined_all = False
+                    join_buttons.append(
+                        InlineKeyboardButton(
+                            join_button_text(channel),
+                            url=f"https://t.me/{channel['username']}"
+                        )
+                    )
+            elif channel["type"] == "private":
+                chat_id = channel["chat_id"]
+                member = await bot.get_chat_member(chat_id, uid)
+                if member.status in ["left", "kicked"]:
+                    joined_all = False
+                    invite = await bot.create_chat_invite_link(
+                        chat_id=chat_id,
+                        name="ForceJoin",
+                        creates_join_request=False
+                    )
+                    join_buttons.append(
+                        InlineKeyboardButton(
+                            join_button_text(channel),
+                            url=invite.invite_link
+                        )
+                    )
         except:
-            pass
+            joined_all = False
+            try:
+                if channel["type"] == "public":
+                    join_buttons.append(
+                        InlineKeyboardButton(
+                            join_button_text(channel),
+                            url=f"https://t.me/{channel['username']}"
+                        )
+                    )
+                else:
+                    invite = await bot.create_chat_invite_link(
+                        chat_id=channel["chat_id"],
+                        name="ForceJoin",
+                        creates_join_request=False
+                    )
+                    join_buttons.append(
+                        InlineKeyboardButton(
+                            join_button_text(channel),
+                            url=invite.invite_link
+                        )
+                    )
+            except:
+                pass
 
-    await db.users.update_one({"_id": uid}, {"$set": updates})
-    await update.message.reply_text("✅ Token verified! You now have 10 coins.")
+    return joined_all, join_buttons
+
+async def send_welcome(uid, context):
+    bot_name = (await context.bot.get_me()).first_name
+    await context.bot.send_photo(
+        uid,
+        photo=WELCOME_IMAGE,
+        caption=f"🥵 Welcome to {bot_name}!\nHere you will access the most unseen 💦 videos.\n👇 Tap below to explore:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📩 Get Random Video", callback_data="get_video")],
+            [InlineKeyboardButton("Developer", url=DEVELOPER_LINK)],
+            [InlineKeyboardButton("Support", url=SUPPORT_LINK), InlineKeyboardButton("Help", callback_data="show_privacy_info")]
+        ])
+    )
+    await context.bot.send_message(
+        uid,
+        "⚠️ **Disclaimer** ⚠️\n\nWe do NOT produce or spread adult content.\nThis bot is only for forwarding files.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📘 Terms & Conditions", url=TERMS_LINK)]]),
+        parse_mode="Markdown"
+    )
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user = update.effective_user
+
+    if await db.banned.find_one({"_id": uid}):
+        return await update.message.reply_text("🛑 You are banned from using this bot.")
+
+    joined_all, join_buttons = await check_force_join(uid, context.bot)
+    if not joined_all:
+        join_buttons.append(InlineKeyboardButton("✅ I Joined", callback_data="force_check"))
+        return await update.message.reply_text(
+            "🛑 You must join all required channels to use this bot:",
+            reply_markup=InlineKeyboardMarkup([[btn] for btn in join_buttons])
+        )
+
+    await db.users.update_one({"_id": uid}, {"$set": {"_id": uid}}, upsert=True)
+
+    await context.bot.send_message(
+        LOG_CHANNEL_ID,
+        f"📥 New User Started Bot\n👤 Name: {user.full_name}\n🆔 ID: {user.id}\n📛 Username: @{user.username or 'N/A'}"
+    )
+
     await send_welcome(uid, context)
 
-# --- Welcome Message After Verify ---
-async def send_welcome(uid, context):
-    bot = context.bot
-    username = (await bot.get_me()).username
-    referral_link = f"https://t.me/{username}?start={uid}"
+async def force_check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try: await query.answer()
+    except: pass
 
-    await bot.send_message(
-        chat_id=uid,
-        text="🎉 Welcome! You're now verified.\nUse the buttons below to start watching videos.",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 Watch Videos", callback_data="get_video")],
-            [InlineKeyboardButton("📢 Share & Earn 5 Coins", url=referral_link)]
-        ])
-    )
-    # ------------------ GET VIDEO ------------------
+    uid = query.from_user.id
+    joined_all, join_buttons = await check_force_join(uid, context.bot)
+    if not joined_all:
+        join_buttons.append(InlineKeyboardButton("✅ I Joined", callback_data="force_check"))
+        return await query.message.edit_text(
+            "❗ You still haven't joined all required channels.",
+            reply_markup=InlineKeyboardMarkup([[btn] for btn in join_buttons])
+        )
+
+    await db.users.update_one({"_id": uid}, {"$set": {"_id": uid}}, upsert=True)
+    await query.message.delete()
+    await send_welcome(uid, context)
 
 async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    try: await query.answer()
+    except: pass
+
     uid = query.from_user.id
 
-    user = await db.users.find_one({"_id": uid})
-    if not user or not user.get("verified"):
-        return await query.message.reply_text("🔐 Please verify using a token to access videos.")
+    if await db.banned.find_one({"_id": uid}):
+        return await query.message.reply_text("🛑 You are banned from using this bot.")
 
-    coins = user.get("coins", 0)
-    if coins <= 0:
-        return await query.message.reply_text(
-            "❌ You’ve used all your video access.\nGet a new token to continue.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔑 Get New Token", url="https://your-site.com/token")]
-            ])
-        )
+    user_doc = await db.users.find_one({"_id": uid})
+    if not user_doc or not user_doc.get("verified"):
+        return await query.message.reply_text("🚫 You need a valid token to access videos. Use /token <your_token>")
 
     user_videos_doc = await db.user_videos.find_one({"_id": uid})
     seen = user_videos_doc.get("seen", []) if user_videos_doc else []
 
     video_docs = await db.videos.aggregate([
         {"$match": {"msg_id": {"$nin": seen}}},
-        {"$sample": {"size": 1}}
-    ]).to_list(1)
+        {"$sample": {"size": 4}}
+    ]).to_list(4)
 
     if not video_docs:
         return await query.message.reply_text("📭 No more unseen videos. Please wait for more uploads.")
@@ -178,89 +209,126 @@ async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 {"$addToSet": {"seen": msg_id}},
                 upsert=True
             )
-            await db.users.update_one({"_id": uid}, {"$inc": {"coins": -1}})
-        except BadRequest as e:
-            if "MESSAGE_ID_INVALID" in str(e):
-                await db.videos.delete_one({"msg_id": msg_id})
-                await db.user_videos.update_many({}, {"$pull": {"seen": msg_id}})
-                return await callback_get_video(update, context)
+            context.application.create_task(delete_after_delay(context.bot, uid, sent.message_id, 3600))
         except:
-            return
+            continue
 
     await context.bot.send_message(
         chat_id=uid,
-        text="⏳ This video will self-destruct in 1 hour.",
+        text="This video will auto-destruct in 1 hour ⌛",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📥 Get Another", callback_data="get_video")]
+            [InlineKeyboardButton("📥 Get More Random Videos", callback_data="get_video")]
         ])
     )
 
-
-# ------------------ AUTO UPLOAD ------------------
-
-async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def verify_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if not is_admin(uid): return
+    if not context.args:
+        return await update.message.reply_text("⚠️ Usage: /token <your_token>")
 
-    if update.message.video:
-        video = update.message.video
-        unique_id = video.file_unique_id
+    user_token = context.args[0]
+    valid = await db.tokens.find_one({"_id": user_token})
+    if not valid:
+        return await update.message.reply_text("❌ Invalid or expired token.")
 
-        exists = await db.videos.find_one({"unique_id": unique_id})
-        if exists:
-            return await update.message.reply_text("⚠️ Video already exists.")
+    await db.users.update_one({"_id": uid}, {"$set": {"verified": True}}, upsert=True)
+    await update.message.reply_text("✅ Token verified! You can now access videos.")
 
+async def new_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
+    if not context.args:
+        return await update.message.reply_text("⚠️ Usage: /newtoken <token>")
+    token = context.args[0]
+    await db.tokens.update_one({"_id": token}, {"$set": {"_id": token}}, upsert=True)
+    await update.message.reply_text(f"✅ Token `{token}` added.", parse_mode="Markdown")
+
+async def expire_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
+    if not context.args:
+        return await update.message.reply_text("⚠️ Usage: /expire <token>")
+    token = context.args[0]
+    result = await db.tokens.delete_one({"_id": token})
+    if result.deleted_count:
+        await update.message.reply_text(f"🗑 Token `{token}` expired.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❌ Token not found.")
+
+async def show_privacy_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    try: await query.answer()
+    except: pass
+    await query.message.reply_text("/privacy - View bot's Terms and Conditions")
+
+async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await context.bot.forward_message(
+            chat_id=update.effective_chat.id,
+            from_chat_id="@bot_backup",
+            message_id=7,
+        )
+    except:
+        await update.message.reply_text("⚠️ Could not fetch privacy policy.")
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Need help? Contact the developer.")
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_sudo(update.effective_user.id):
+        return
+    if not context.args:
+        return await update.message.reply_text("⚠️ Usage: /broadcast your message")
+
+    msg = " ".join(context.args)
+    count = 0
+    async for user in db.users.find():
         try:
-            sent = await context.bot.copy_message(
-                chat_id=VAULT_CHANNEL_ID,
-                from_chat_id=update.message.chat_id,
-                message_id=update.message.message_id,
-            )
-            await db.videos.insert_one({"msg_id": sent.message_id, "unique_id": unique_id})
-            await update.message.reply_text("✅ Video saved to vault.")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Failed to upload: {e}")
-
-
-# ------------------ STATS & RESET ------------------
+            await context.bot.send_message(user["_id"], msg)
+            count += 1
+        except:
+            pass
+    await update.message.reply_text(f"✅ Broadcast sent to {count} users.")
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
+    if not await is_sudo(update.effective_user.id):
+        return
     v = await db.videos.count_documents({})
     u = await db.users.count_documents({})
-    t = await db.tokens.count_documents({})
+    s = await db.sudos.count_documents({})
+    b = await db.banned.count_documents({})
     await update.message.reply_text(
-        f"📊 Stats:\nUsers: {u}\nVideos: {v}\nTokens: {t}"
+        f"📊 **Bot Stats**\n\n🎞 Videos: `{v}`\n👥 Users: `{u}`\n🛡 Sudo: `{s}`\n🚫 Banned: `{b}`",
+        parse_mode="Markdown"
     )
 
-async def reset_seen(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
+def delete_webhook_sync():
+    import requests
+    url = f"https://api.telegram.org/bot{TOKEN}/deleteWebhook"
     try:
-        target = int(context.args[0])
-        await db.user_videos.update_one({"_id": target}, {"$set": {"seen": []}})
-        await update.message.reply_text("✅ Reset done.")
-    except:
-        await update.message.reply_text("⚠️ Usage: /reset_seen <user_id>")
-
-
-# ------------------ MAIN ------------------
+        r = requests.get(url)
+        print("🔧 Webhook deleted:", r.json())
+    except Exception as e:
+        print("❌ Failed to delete webhook:", e)
 
 def main():
+    delete_webhook_sync()
+
     app = ApplicationBuilder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("newtoken", new_token_cmd))
-    app.add_handler(CommandHandler("expire", expire_token_cmd))
-    app.add_handler(CommandHandler("stats", stats_command))
-    app.add_handler(CommandHandler("reset_seen", reset_seen))
-
     app.add_handler(CallbackQueryHandler(callback_get_video, pattern="get_video"))
-    app.add_handler(CallbackQueryHandler(token_button_callback, pattern="submit_token"))
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_token_input))
+    app.add_handler(CallbackQueryHandler(show_privacy_info, pattern="show_privacy_info"))
+    app.add_handler(CallbackQueryHandler(force_check_callback, pattern="force_check"))
+    app.add_handler(CommandHandler("privacy", privacy_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler(["stats", "status"], stats_command))
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("token", verify_token))
+    app.add_handler(CommandHandler("newtoken", new_token))
+    app.add_handler(CommandHandler("expire", expire_token))
     app.add_handler(MessageHandler(filters.VIDEO, auto_upload))
 
-    print("✅ Bot running...")
+    print("✅ Bot started with polling...")
     app.run_polling()
 
 if __name__ == "__main__":
