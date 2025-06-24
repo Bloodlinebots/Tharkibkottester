@@ -9,6 +9,7 @@ from telegram.ext import (
 from telegram.error import BadRequest, TelegramError
 from motor.motor_asyncio import AsyncIOMotorClient
 
+# ----- CONFIG -----
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 
@@ -54,6 +55,7 @@ def join_button_text(channel):
 async def check_force_join(uid, bot):
     join_buttons = []
     joined_all = True
+
     for channel in FORCE_JOIN_CHANNELS:
         try:
             if channel["type"] == "public":
@@ -180,10 +182,6 @@ async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if await db.banned.find_one({"_id": uid}):
         return await query.message.reply_text("🛑 You are banned from using this bot.")
 
-    user_doc = await db.users.find_one({"_id": uid})
-    if not user_doc or not user_doc.get("verified"):
-        return await query.message.reply_text("🚫 You need a valid token to access videos. Use /token <your_token>")
-
     user_videos_doc = await db.user_videos.find_one({"_id": uid})
     seen = user_videos_doc.get("seen", []) if user_videos_doc else []
 
@@ -210,8 +208,18 @@ async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 upsert=True
             )
             context.application.create_task(delete_after_delay(context.bot, uid, sent.message_id, 3600))
+        except BadRequest as e:
+            if "MESSAGE_ID_INVALID" in str(e):
+                await db.videos.delete_one({"msg_id": msg_id})
+                await db.user_videos.update_many({}, {"$pull": {"seen": msg_id}})
+                await context.bot.send_message(LOG_CHANNEL_ID, f"⚠️ Removed broken video `{msg_id}`", parse_mode="Markdown")
+                return await callback_get_video(update, context)
+            else:
+                return
+        except TelegramError:
+            return
         except:
-            continue
+            return
 
     await context.bot.send_message(
         chat_id=uid,
@@ -221,39 +229,30 @@ async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ])
     )
 
-async def verify_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def auto_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    if not context.args:
-        return await update.message.reply_text("⚠️ Usage: /token <your_token>")
-
-    user_token = context.args[0]
-    valid = await db.tokens.find_one({"_id": user_token})
-    if not valid:
-        return await update.message.reply_text("❌ Invalid or expired token.")
-
-    await db.users.update_one({"_id": uid}, {"$set": {"verified": True}}, upsert=True)
-    await update.message.reply_text("✅ Token verified! You can now access videos.")
-
-async def new_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
+    if not await is_sudo(uid):
         return
-    if not context.args:
-        return await update.message.reply_text("⚠️ Usage: /newtoken <token>")
-    token = context.args[0]
-    await db.tokens.update_one({"_id": token}, {"$set": {"_id": token}}, upsert=True)
-    await update.message.reply_text(f"✅ Token `{token}` added.", parse_mode="Markdown")
 
-async def expire_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_USER_ID:
-        return
-    if not context.args:
-        return await update.message.reply_text("⚠️ Usage: /expire <token>")
-    token = context.args[0]
-    result = await db.tokens.delete_one({"_id": token})
-    if result.deleted_count:
-        await update.message.reply_text(f"🗑 Token `{token}` expired.", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("❌ Token not found.")
+    if update.message.video:
+        video = update.message.video
+        unique_id = video.file_unique_id
+
+        existing = await db.videos.find_one({"unique_id": unique_id})
+        if existing:
+            return await update.message.reply_text("⚠️ This video already exists in the vault.")
+
+        try:
+            sent = await context.bot.copy_message(
+                chat_id=VAULT_CHANNEL_ID,
+                from_chat_id=update.message.chat_id,
+                message_id=update.message.message_id,
+            )
+            await add_video(sent.message_id, unique_id=unique_id)
+            await update.message.reply_text("✅ Uploaded to vault and saved.")
+        except Exception as e:
+            await update.message.reply_text(f"⚠️ Upload failed: {e}")
+            await context.bot.send_message(LOG_CHANNEL_ID, f"❌ Upload error by {uid}: {e}")
 
 async def show_privacy_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -273,6 +272,46 @@ async def privacy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Need help? Contact the developer.")
+
+async def add_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
+    try:
+        target = int(context.args[0])
+        await db.sudos.update_one({"_id": target}, {"$set": {"_id": target}}, upsert=True)
+        await update.message.reply_text(f"✅ Added {target} as sudo.")
+    except:
+        await update.message.reply_text("⚠️ Usage: /addsudo user_id")
+
+async def remove_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_USER_ID:
+        return
+    try:
+        target = int(context.args[0])
+        await db.sudos.delete_one({"_id": target})
+        await update.message.reply_text(f"❌ Removed {target} from sudo.")
+    except:
+        await update.message.reply_text("⚠️ Usage: /remsudo user_id")
+
+async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_sudo(update.effective_user.id):
+        return
+    try:
+        target = int(context.args[0])
+        await db.banned.update_one({"_id": target}, {"$set": {"_id": target}}, upsert=True)
+        await update.message.reply_text(f"🚫 Banned user {target}")
+    except:
+        await update.message.reply_text("⚠️ Usage: /ban user_id")
+
+async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_sudo(update.effective_user.id):
+        return
+    try:
+        target = int(context.args[0])
+        await db.banned.delete_one({"_id": target})
+        await update.message.reply_text(f"✅ Unbanned user {target}")
+    except:
+        await update.message.reply_text("⚠️ Usage: /unban user_id")
 
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_sudo(update.effective_user.id):
@@ -302,21 +341,34 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-def main():
-    delete_webhook_sync()
+# ✅ NEW: Reset seen list
+async def reset_seen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_sudo(update.effective_user.id):
+        return
+    try:
+        target = int(context.args[0])
+        await db.user_videos.update_one({"_id": target}, {"$set": {"seen": []}}, upsert=True)
+        await update.message.reply_text(f"✅ Reset seen list for user {target}")
+    except:
+        await update.message.reply_text("⚠️ Usage: /reset_seen user_id")
 
+def main():
+    
     app = ApplicationBuilder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(callback_get_video, pattern="get_video"))
     app.add_handler(CallbackQueryHandler(show_privacy_info, pattern="show_privacy_info"))
     app.add_handler(CallbackQueryHandler(force_check_callback, pattern="force_check"))
     app.add_handler(CommandHandler("privacy", privacy_command))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("addsudo", add_sudo))
+    app.add_handler(CommandHandler("remsudo", remove_sudo))
+    app.add_handler(CommandHandler("ban", ban_user))
+    app.add_handler(CommandHandler("unban", unban_user))
     app.add_handler(CommandHandler(["stats", "status"], stats_command))
     app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("token", verify_token))
-    app.add_handler(CommandHandler("newtoken", new_token))
-    app.add_handler(CommandHandler("expire", expire_token))
+    app.add_handler(CommandHandler("reset_seen", reset_seen))  # 👈 Added here
     app.add_handler(MessageHandler(filters.VIDEO, auto_upload))
 
     print("✅ Bot started with polling...")
