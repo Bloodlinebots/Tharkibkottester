@@ -242,38 +242,37 @@ async def force_check_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await send_welcome(uid, context)
     # --- PART 3: Video System, Admin Panel ---
 
-async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+ async def callback_get_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    try: await query.answer()
-    except: pass
+    try:
+        await query.answer()
+    except:
+        pass
+
     uid = query.from_user.id
 
     # 🚫 Banned check
-    # 🚫 Banned check
-if await db.banned.find_one({"_id": uid}):
-    return await query.message.reply_text("🚫 <b>You are banned from using this bot.</b>", parse_mode="HTML")
+    if await db.banned.find_one({"_id": uid}):
+        return await query.message.reply_text("🚫 <b>You are banned from using this bot.</b>", parse_mode="HTML")
 
-# 🔄 Admin limit bypass
-if await is_sudo(uid):
-    is_limit_free = True
-else:
-    is_limit_free = False
+    # 🔄 Admin limit bypass
+    is_limit_free = await is_sudo(uid)
 
-# 🧠 View limit check
-if not is_limit_free:
-    allowed, views, limit = await can_user_watch_video(uid)
-    if not allowed:
-        return await query.message.reply_text(
-            f"🚫 <b>Your Daily Limit Exceeded!</b>\n\n"
-            f"📺 You've watched <b>{views}/{limit}</b> videos in the last 24 hours.\n\n"
-            f"🎯 <b>Refer 1 friend</b> to unlock +5 more videos today!\n\n"
-            f"👇 Tap below to get your referral link:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎁 Get Referral Link", url=f"https://t.me/{(await context.bot.get_me()).username}?start={uid}")],
-                [InlineKeyboardButton("🔁 Try Again", callback_data="get_video")]
-            ]),
-            parse_mode="HTML"
-        )
+    # 🧠 View limit check
+    if not is_limit_free:
+        allowed, views, limit = await can_user_watch_video(uid)
+        if not allowed:
+            return await query.message.reply_text(
+                f"🚫 <b>Your Daily Limit Exceeded!</b>\n\n"
+                f"📺 You've watched <b>{views}/{limit}</b> videos in the last 24 hours.\n\n"
+                f"🎯 <b>Refer 1 friend</b> to unlock +5 more videos today!\n\n"
+                f"👇 Tap below to get your referral link:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎁 Get Referral Link", url=f"https://t.me/{(await context.bot.get_me()).username}?start={uid}")],
+                    [InlineKeyboardButton("🔁 Try Again", callback_data="get_video")]
+                ]),
+                parse_mode="HTML"
+            )
 
     # 🎞 Get unseen video
     seen = (await db.user_videos.find_one({"_id": uid}) or {}).get("seen", [])
