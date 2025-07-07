@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import asyncio
+import nest_asyncio
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -111,13 +112,20 @@ async def main():
     print("🤖 Bot is running...")
     await app.run_polling()
 
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("connect", connect))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+
+    print("🤖 Bot is running...")
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    await app.updater.idle()
+    await app.shutdown()
 
 if __name__ == "__main__":
-    import asyncio
-    try:
-        asyncio.get_event_loop().run_until_complete(main())
-    except RuntimeError as e:
-        if str(e).startswith("This event loop is already running"):
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(main())
+    nest_asyncio.apply()
+    asyncio.run(main())
