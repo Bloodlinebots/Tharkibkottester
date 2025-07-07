@@ -17,13 +17,11 @@ API_ID = 29587868
 API_HASH = "d9fb9ba59c30ae80c25c30d5c4c26e87"
 BOT_TOKEN = "8076902558:AAH2_zkW1ytplhFxtdIGPfJVLEj_gKzKukQ"
 SESSION_NAME = "session_privacy_destroyer"
-
 CONFIG_FILE = "config.json"
 
 # === Logging ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 # === JSON Storage ===
 def load_channel_id():
@@ -36,16 +34,13 @@ def save_channel_id(channel_id):
     with open(CONFIG_FILE, "w") as f:
         json.dump({"channel_id": channel_id}, f)
 
-
 # === Admin Check ===
 async def is_bot_admin(channel_id):
     try:
-        client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
-        await client.start(bot_token=BOT_TOKEN)
-        me = await client.get_me()
-        result = await client(GetParticipantRequest(channel_id, me.id))
-        await client.disconnect()
-        return hasattr(result.participant, 'admin_rights')
+        async with TelegramClient(SESSION_NAME, API_ID, API_HASH).start(bot_token=BOT_TOKEN) as client:
+            me = await client.get_me()
+            result = await client(GetParticipantRequest(channel_id, me.id))
+            return hasattr(result.participant, 'admin_rights')
     except ChatAdminRequiredError:
         return False
     except ChannelInvalidError:
@@ -54,16 +49,13 @@ async def is_bot_admin(channel_id):
         logger.error(f"Admin check failed: {e}")
         return False
 
-
 # === Handlers ===
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Welcome to Privacy Destroyer Bot!\n"
         "Use /connect <channel_id> to link your channel.\n"
         "Once connected, just send videos here and I’ll post them to your channel."
     )
-
 
 async def connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1:
@@ -82,7 +74,6 @@ async def connect(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Please make me an admin first and try again."
         )
 
-
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     channel_id = load_channel_id()
     if not channel_id:
@@ -100,18 +91,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Video post error: {e}")
         await update.message.reply_text("❌ Failed to post to channel.")
 
-
 # === Main ===
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("connect", connect))
-    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-
-    print("🤖 Bot is running...")
-    await app.run_polling()
-
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
